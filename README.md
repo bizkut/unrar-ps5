@@ -14,27 +14,52 @@ For example:
 /data/homebrew/PPSA06465-app/sce_sys/param.json
 ```
 
-## Behavior
+## How to Use
 
-On injection, the payload:
+### Deploy
 
-1. Creates `/data/unrar/config.ini` if it does not exist.
-2. Loads the configured archive, or the first `.rar` found recursively under `/data/unrar/`.
-3. Applies optional scheduling settings.
-4. Removes the previous installed `<TitleID>-app` folder when it can infer the TitleID before extraction.
-5. Extracts into `/data/unrar/staging`.
-6. Finds `sce_sys/param.json`, reads the TitleID, removes the final install folder, and moves the extracted app into `/data/homebrew/<TitleID>-app`.
-7. Optionally deletes the RAR archive volumes after a successful extraction.
-8. Writes progress and errors to notifications and `/data/unrar/unrar.log`.
+1. Place `config.ini` (see [Config](#config) below) at:
+   ```text
+   /data/unrar/
+   ```
+2. Place your RAR archive(s) under the configured `rar_location` (default is `/data/unrar/`).
+   * By default, archives are searched under `/data/unrar/`. To keep archives on another device (such as a USB drive), set `rar_location=` in `/data/unrar/config.ini`, for example:
+     ```ini
+     rar_location=/mnt/usb0
+     ```
+3. Inject the ELF with an ELF loader listening on port `9021`:
+   ```sh
+   nc -w 10 ps5ip 9021 < unrar_ps5.elf
+   ```
+   Or use the Makefile target:
+   ```sh
+   make send PS5_HOST=ps5ip PS5_PORT=9021
+   ```
 
-A lock file at `/data/unrar/unrar.lock` prevents overlapping injections. The lock uses an OS file lock, so stale lock files from a crash should not block later runs.
+### Notifications And Logs
+
+The payload sends PS5 notifications for:
+- Extraction start.
+- Progress every 10%.
+- Successful install with TitleID and final path.
+- Errors with a short reason.
+
+Detailed logs are appended to:
+```text
+/data/unrar/unrar.log
+```
+
+Useful log fields include selected archive, RAR location, extract location, delete-after state, thread count, priority result, CPU mask result, extraction time, normalization time, TitleID, and final path.
+
+---
 
 ## Config
 
-Default file created at `/data/unrar/config.ini`:
+Default file created at `/data/unrar/config.ini` on first run if it does not exist:
 
 ```ini
 filename=
+rar_location=/data/unrar
 rar_password=
 delete_after=0
 extract_location=/data/homebrew
@@ -43,11 +68,12 @@ nice=-20
 cpu_mask=0
 ```
 
-Options:
+### Options
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `filename` | empty | Archive to extract. If empty, the first `.rar` found recursively under `/data/unrar/` is used. Relative paths are resolved under `/data/unrar/`; absolute paths are used as-is. |
+| `filename` | empty | Archive to extract. If empty, the first `.rar` found recursively under `rar_location` is used. Relative paths are resolved under `rar_location`; absolute paths are used as-is. |
+| `rar_location` | `/data/unrar` | Base directory to search for archives when `filename` is empty, and base directory for relative `filename` values. Set this to a USB path if the archives are on external storage. |
 | `rar_password` | empty | RAR password. Empty means no password is passed to UnRAR. |
 | `delete_after` | `0` | Set to `1`, `true`, `yes`, or `on` to delete archive volumes after a successful extraction. |
 | `extract_location` | `/data/homebrew` | Base install directory. Final path becomes `<extract_location>/<TitleID>-app`. |
@@ -59,6 +85,7 @@ For the test archive used during development:
 
 ```ini
 filename=
+rar_location=/data/unrar
 rar_password=DLPSGAME.COM
 delete_after=0
 extract_location=/data/homebrew
@@ -67,7 +94,53 @@ nice=-20
 cpu_mask=0
 ```
 
-## Build
+---
+
+## Troubleshooting
+
+- `no .rar file found`: upload a `.rar` archive under `rar_location`, set `rar_location=`, or set `filename=`.
+- `bad password` or `checksum or password error`: set `rar_password=` correctly.
+- `sce_sys/param.json not found after extraction`: the archive does not contain the expected PS5 app folder structure.
+- `TitleID not found`: `param.json` exists but does not contain a supported TitleID key.
+- `extraction already running`: another payload instance is active.
+- `cpu_mask ... result=fail`: CPU affinity was rejected; leave `cpu_mask=0`.
+
+---
+
+## Technical Details
+
+### Behavior
+
+On injection, the payload:
+
+1. Creates `/data/unrar/config.ini` if it does not exist.
+2. Loads the configured archive, or the first `.rar` found recursively under `rar_location`.
+3. Applies optional scheduling settings.
+4. Removes the previous installed `<TitleID>-app` folder when it can infer the TitleID before extraction.
+5. Extracts into `/data/unrar/staging`.
+6. Finds `sce_sys/param.json`, reads the TitleID, removes the final install folder, and moves the extracted app into `/data/homebrew/<TitleID>-app`.
+7. Optionally deletes the RAR archive volumes after a successful extraction.
+8. Writes progress and errors to notifications and `/data/unrar/unrar.log`.
+
+A lock file at `/data/unrar/unrar.lock` prevents overlapping injections. The lock uses an OS file lock, so stale lock files from a crash should not block later runs.
+
+### Performance Notes
+
+Development testing found the fastest stable defaults were:
+
+```ini
+threads=0
+nice=-20
+cpu_mask=0
+```
+
+`threads=0` lets UnRAR choose its internal threading. Explicit values from `1` to `8` were benchmarked and were slower in the tested archive. `nice=-20` was accepted on the tested PS5 and improved runtime. CPU affinity can be enabled with `cpu_mask`, but it may be rejected depending on kernel support; use `/data/unrar/unrar.log` to confirm.
+
+---
+
+## Development
+
+### Build
 
 Build with the Docker SDK image:
 
@@ -92,76 +165,7 @@ There is also a convenience target:
 make docker-build
 ```
 
-## Deploy
-
-Place the RAR archive and optional config at:
-
-```text
-/data/unrar/
-```
-
-Inject the ELF with an ELF loader listening on port `9021`:
-
-```sh
-nc -w 10 ps5ip 9021 < unrar_ps5.elf
-```
-
-Or use the Makefile target:
-
-```sh
-make send PS5_HOST=ps5ip PS5_PORT=9021
-```
-
-## GitHub Actions Releases
-
-This repo builds with GitHub Actions using the ARM64 Docker Hub SDK image `bizkut666/ps5-payload-sdk:libcxx` on the native `ubuntu-24.04-arm` runner. Release builds run for `v*` tags; pull requests still build-test the payload.
-
-Every pull request builds `unrar_ps5.elf` and uploads it as a workflow artifact. To create a GitHub Release with the ELF attached, push a version tag:
-
-```sh
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-## Notifications And Logs
-
-The payload sends PS5 notifications for:
-
-- Extraction start.
-- Progress every 10%.
-- Successful install with TitleID and final path.
-- Errors with a short reason.
-
-Detailed logs are appended to:
-
-```text
-/data/unrar/unrar.log
-```
-
-Useful log fields include selected archive, extract location, delete-after state, thread count, priority result, CPU mask result, extraction time, normalization time, TitleID, and final path.
-
-## Performance Notes
-
-Development testing found the fastest stable defaults were:
-
-```ini
-threads=0
-nice=-20
-cpu_mask=0
-```
-
-`threads=0` lets UnRAR choose its internal threading. Explicit values from `1` to `8` were benchmarked and were slower in the tested archive. `nice=-20` was accepted on the tested PS5 and improved runtime. CPU affinity can be enabled with `cpu_mask`, but it may be rejected depending on kernel support; use `/data/unrar/unrar.log` to confirm.
-
-## Troubleshooting
-
-- `no .rar file found`: upload a `.rar` archive under `/data/unrar/` or set `filename=`.
-- `bad password` or `checksum or password error`: set `rar_password=` correctly.
-- `sce_sys/param.json not found after extraction`: the archive does not contain the expected PS5 app folder structure.
-- `TitleID not found`: `param.json` exists but does not contain a supported TitleID key.
-- `extraction already running`: another payload instance is active.
-- `cpu_mask ... result=fail`: CPU affinity was rejected; leave `cpu_mask=0`.
-
-## Release Checklist
+### Release Checklist
 
 ```sh
 docker run --rm \

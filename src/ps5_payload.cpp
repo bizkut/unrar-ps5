@@ -34,6 +34,7 @@ extern "C" int sceKernelSendNotificationRequest(int, notify_request_t *, size_t,
 struct PayloadConfig
 {
   std::string filename;
+  std::string rar_location;
   std::string rar_password;
   bool delete_after;
   std::string extract_location;
@@ -347,6 +348,7 @@ static bool EnsureDefaultConfig(std::string &Error)
 
   static const char DefaultConfig[]=
     "filename=\n"
+    "rar_location=/data/unrar\n"
     "rar_password=\n"
     "delete_after=0\n"
     "extract_location=/data/homebrew\n"
@@ -365,6 +367,7 @@ static bool EnsureDefaultConfig(std::string &Error)
 static bool LoadConfig(PayloadConfig &Cfg,std::string &Error)
 {
   Cfg.filename.clear();
+  Cfg.rar_location=UNRAR_DATA_DIR;
   Cfg.rar_password.clear();
   Cfg.delete_after=false;
   Cfg.extract_location=DEFAULT_EXTRACT_LOCATION;
@@ -401,6 +404,8 @@ static bool LoadConfig(PayloadConfig &Cfg,std::string &Error)
     std::string Value=Trim(Line.substr(Eq+1));
     if (Key=="filename")
       Cfg.filename=Value;
+    else if (Key=="rar_location" && !Value.empty())
+      Cfg.rar_location=Value;
     else if (Key=="rar_password")
       Cfg.rar_password=Value;
     else if (Key=="delete_after")
@@ -479,20 +484,20 @@ static void CollectRarFiles(const std::string &Root,std::vector<std::string> &Pa
   closedir(Dir);
 }
 
-static bool FindFirstRar(std::string &Path,std::string &Error)
+static bool FindFirstRar(const std::string &RarLocation,std::string &Path,std::string &Error)
 {
-  if (!IsDirPath(UNRAR_DATA_DIR))
+  if (!IsDirPath(RarLocation))
   {
-    Error="failed to open " UNRAR_DATA_DIR;
+    Error="failed to open rar_location: "+RarLocation;
     return false;
   }
 
   std::vector<std::string> Paths;
-  CollectRarFiles(UNRAR_DATA_DIR,Paths);
+  CollectRarFiles(RarLocation,Paths);
 
   if (Paths.empty())
   {
-    Error="no .rar file found under " UNRAR_DATA_DIR;
+    Error="no .rar file found under "+RarLocation;
     return false;
   }
 
@@ -504,9 +509,9 @@ static bool FindFirstRar(std::string &Path,std::string &Error)
 static bool ResolveArchivePath(const PayloadConfig &Cfg,std::string &ArchivePath,std::string &Error)
 {
   if (Cfg.filename.empty())
-    return FindFirstRar(ArchivePath,Error);
+    return FindFirstRar(Cfg.rar_location,ArchivePath,Error);
 
-  ArchivePath=Cfg.filename[0]=='/' ? Cfg.filename:JoinPath(UNRAR_DATA_DIR,Cfg.filename);
+  ArchivePath=Cfg.filename[0]=='/' ? Cfg.filename:JoinPath(Cfg.rar_location,Cfg.filename);
   if (!PathExists(ArchivePath))
   {
     Error="archive not found: "+ArchivePath;
@@ -930,9 +935,9 @@ int main(int argc,char *argv[])
   ApplySchedulingConfig(Cfg);
 
   Notify("UnRAR: starting extraction of %s",BaseName(ArchivePath).c_str());
-  LogLine("start archive=%s extract_location=%s delete_after=%u threads=%u nice=%d cpu_mask=0x%llx",
-          ArchivePath.c_str(),Cfg.extract_location.c_str(),Cfg.delete_after ? 1:0,
-          Cfg.threads,Cfg.nice,(unsigned long long)Cfg.cpu_mask);
+  LogLine("start archive=%s rar_location=%s extract_location=%s delete_after=%u threads=%u nice=%d cpu_mask=0x%llx",
+          ArchivePath.c_str(),Cfg.rar_location.c_str(),Cfg.extract_location.c_str(),
+          Cfg.delete_after ? 1:0,Cfg.threads,Cfg.nice,(unsigned long long)Cfg.cpu_mask);
   LastNotifiedProgress=-10;
 
   if (!RemoveExistingInstallBeforeExtract(Cfg,ArchivePath,Error))
