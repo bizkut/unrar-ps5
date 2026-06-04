@@ -1,0 +1,35 @@
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y \
+    git \
+    cmake \
+    ninja-build \
+    clang-18 \
+    lld-18 \
+    make \
+    python3 \
+    python3-pyelftools \
+    wget \
+    xz-utils \
+    pkg-config \
+    sudo \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ln -s /usr/bin/clang-18 /usr/bin/clang && \
+    ln -s /usr/bin/clang++-18 /usr/bin/clang++ && \
+    ln -s /usr/bin/ld.lld-18 /usr/bin/ld.lld
+
+WORKDIR /opt
+
+RUN git clone https://github.com/ps5-payload-dev/sdk.git ps5-payload-sdk-source
+
+WORKDIR /opt/ps5-payload-sdk-source
+RUN make DESTDIR=/opt/ps5-payload-sdk install
+
+WORKDIR /opt
+COPY build_deps.sh /opt/build_deps.sh
+RUN bash /opt/build_deps.sh
+
+ENV PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+WORKDIR /src

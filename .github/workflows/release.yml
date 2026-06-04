@@ -21,13 +21,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Build PS5 payload SDK image
+        run: |
+          docker build \
+            -t ps5-payload-sdk:ci \
+            -f .github/docker/Dockerfile.sdk \
+            .github/docker
+
       - name: Build with PS5 payload SDK
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
             -e PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk \
-            bizkut666/ps5-payload-sdk:libcxx \
+            ps5-payload-sdk:ci \
             make clean all
 
       - name: Upload payload artifact
