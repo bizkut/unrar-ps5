@@ -21,20 +21,19 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Build PS5 payload SDK image
-        run: |
-          docker build \
-            -t ps5-payload-sdk:ci \
-            -f .github/docker/Dockerfile.sdk \
-            .github/docker
+      - name: Set up QEMU for ARM64 SDK image
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - name: Build with PS5 payload SDK
         run: |
           docker run --rm \
+            --platform linux/arm64 \
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
             -e PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk \
-            ps5-payload-sdk:ci \
+            bizkut666/ps5-payload-sdk:libcxx \
             make clean all
 
       - name: Upload payload artifact
