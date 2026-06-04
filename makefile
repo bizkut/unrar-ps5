@@ -1,79 +1,51 @@
-#
-# Makefile for UNIX - unrar
+PS5_HOST ?= ps5ip
+PS5_PORT ?= 9021
+PS5_PAYLOAD_SDK ?= /Users/bizkut/Downloads/PS5/sdk/host
 
-# Linux using GCC
-# 2024.08.19: -march=native isn't recognized on some platforms such as RISCV64.
-# Thus we removed it. Clang ARM users can add -march=armv8-a+crypto to enable
-# ARM NEON crypto.
-CXX=c++
-CXXFLAGS=-O2 -std=c++11 -Wno-logical-op-parentheses -Wno-switch -Wno-dangling-else
-LIBFLAGS=-fPIC
-DEFINES=-D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -DRAR_SMP
-STRIP=strip
-AR=ar
-LDFLAGS=-pthread
-DESTDIR=/usr
+include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 
-##########################
+TARGET := unrar_ps5
+ELF := $(TARGET).elf
+SRC_DIR := src
 
-COMPILE=$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEFINES)
-LINK=$(CXX)
+CXXFLAGS := -O2 -std=c++11 -Wall -Wno-logical-op-parentheses -Wno-switch -Wno-dangling-else
+DEFINES := -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_UNIX -DRAR_SMP -DPS5_PAYLOAD -DSILENT
+LDFLAGS := -pthread -lSceNotification
 
-WHAT=UNRAR
+COMMON_OBJ := \
+	$(SRC_DIR)/strlist.o $(SRC_DIR)/strfn.o $(SRC_DIR)/pathfn.o $(SRC_DIR)/smallfn.o \
+	$(SRC_DIR)/global.o $(SRC_DIR)/file.o $(SRC_DIR)/filefn.o $(SRC_DIR)/filcreat.o \
+	$(SRC_DIR)/archive.o $(SRC_DIR)/arcread.o $(SRC_DIR)/unicode.o $(SRC_DIR)/system.o \
+	$(SRC_DIR)/crypt.o $(SRC_DIR)/crc.o $(SRC_DIR)/rawread.o $(SRC_DIR)/encname.o \
+	$(SRC_DIR)/resource.o $(SRC_DIR)/match.o $(SRC_DIR)/timefn.o $(SRC_DIR)/rdwrfn.o \
+	$(SRC_DIR)/consio.o $(SRC_DIR)/options.o $(SRC_DIR)/errhnd.o $(SRC_DIR)/rarvm.o \
+	$(SRC_DIR)/secpassword.o $(SRC_DIR)/rijndael.o $(SRC_DIR)/getbits.o $(SRC_DIR)/sha1.o \
+	$(SRC_DIR)/sha256.o $(SRC_DIR)/blake2s.o $(SRC_DIR)/hash.o $(SRC_DIR)/extinfo.o \
+	$(SRC_DIR)/extract.o $(SRC_DIR)/volume.o $(SRC_DIR)/list.o $(SRC_DIR)/find.o \
+	$(SRC_DIR)/unpack.o $(SRC_DIR)/headers.o $(SRC_DIR)/threadpool.o $(SRC_DIR)/rs16.o \
+	$(SRC_DIR)/cmddata.o $(SRC_DIR)/ui.o $(SRC_DIR)/largepage.o
 
-UNRAR_OBJ=filestr.o recvol.o rs.o scantree.o qopen.o
-LIB_OBJ=filestr.o scantree.o dll.o qopen.o
+UNRAR_OBJ := $(SRC_DIR)/filestr.o $(SRC_DIR)/recvol.o $(SRC_DIR)/rs.o $(SRC_DIR)/scantree.o $(SRC_DIR)/qopen.o
+PAYLOAD_OBJ := $(SRC_DIR)/ps5_payload.o
+OBJECTS := $(COMMON_OBJ) $(UNRAR_OBJ) $(PAYLOAD_OBJ)
 
-OBJECTS=rar.o strlist.o strfn.o pathfn.o smallfn.o global.o file.o filefn.o filcreat.o \
-	archive.o arcread.o unicode.o system.o crypt.o crc.o rawread.o encname.o \
-	resource.o match.o timefn.o rdwrfn.o consio.o options.o errhnd.o rarvm.o secpassword.o \
-	rijndael.o getbits.o sha1.o sha256.o blake2s.o hash.o extinfo.o extract.o volume.o \
-	list.o find.o unpack.o headers.o threadpool.o rs16.o cmddata.o ui.o largepage.o
+all: $(ELF)
 
-.cpp.o:
-	$(COMPILE) -D$(WHAT) -c $<
+$(SRC_DIR)/%.o: $(SRC_DIR)/%.cpp
+	$(CXX) $(CXXFLAGS) $(DEFINES) -DUNRAR -c $< -o $@
 
-all:	unrar
-
-install:	install-unrar
-
-uninstall:	uninstall-unrar
+$(ELF): $(OBJECTS)
+	$(CXX) -o $@ $(OBJECTS) $(LDFLAGS)
 
 clean:
-	@rm -f *.bak *~
-	@rm -f $(OBJECTS) $(UNRAR_OBJ) $(LIB_OBJ)
-	@rm -f unrar libunrar.*
+	rm -f $(OBJECTS) $(ELF)
 
-# We removed 'clean' from dependencies, because it prevented parallel
-# 'make -Jn' builds.
+send: $(ELF)
+	nc -w 10 $(PS5_HOST) $(PS5_PORT) < $<
 
-unrar:	$(OBJECTS) $(UNRAR_OBJ)
-	@rm -f unrar
-	$(LINK) -o unrar $(LDFLAGS) $(OBJECTS) $(UNRAR_OBJ) $(LIBS)	
-	$(STRIP) unrar
+test: send
 
-sfx:	WHAT=SFX_MODULE
-sfx:	$(OBJECTS)
-	@rm -f default.sfx
-	$(LINK) -o default.sfx $(LDFLAGS) $(OBJECTS)
-	$(STRIP) default.sfx
+docker-build:
+	docker run --rm -v "$(CURDIR):/work" -w /work -e PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk ps5-payload-sdk:libcxx make
 
-lib:	WHAT=RARDLL
-lib:	CXXFLAGS+=$(LIBFLAGS)
-lib:	$(OBJECTS) $(LIB_OBJ)
-	@rm -f libunrar.*
-	$(LINK) -shared -o libunrar.so $(LDFLAGS) $(OBJECTS) $(LIB_OBJ)
-	$(AR) rcs libunrar.a $(OBJECTS) $(LIB_OBJ)
-
-install-unrar:
-			install -D unrar $(DESTDIR)/bin/unrar
-
-uninstall-unrar:
-			rm -f $(DESTDIR)/bin/unrar
-
-install-lib:
-		install libunrar.so $(DESTDIR)/lib
-		install libunrar.a $(DESTDIR)/lib
-
-uninstall-lib:
-		rm -f $(DESTDIR)/lib/libunrar.so
+.PHONY: all clean send test docker-build

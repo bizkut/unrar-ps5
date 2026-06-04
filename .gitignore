@@ -1,0 +1,7 @@
+*.o
+*.elf
+*.self
+*.sprx
+*.map
+*.log
+.DS_Store

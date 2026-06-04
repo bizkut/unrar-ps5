@@ -7,6 +7,17 @@
 #include <wmmintrin.h>
 #endif
 
+#if defined(PS5_PAYLOAD) && defined(USE_SSE) && defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
+static bool CpuHasAesNi()
+{
+  uint Regs[4];
+  __asm__ volatile("cpuid"
+                   : "=a"(Regs[0]), "=b"(Regs[1]), "=c"(Regs[2]), "=d"(Regs[3])
+                   : "a"(1), "c"(0));
+  return (Regs[2] & 0x2000000)!=0;
+}
+#endif
+
 static byte S[256]=
 {
    99, 124, 119, 123, 242, 107, 111, 197,  48,   1, 103,  43, 254, 215, 171, 118, 
@@ -118,6 +129,8 @@ void Rijndael::Init(bool Encrypt,const byte *key,uint keyLen,const byte * initVe
   }
   else
     AES_NI=false;
+#elif defined(PS5_PAYLOAD) && defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
+  AES_NI=CpuHasAesNi();
 #elif defined(__GNUC__)
   AES_NI=__builtin_cpu_supports("aes");
 #endif

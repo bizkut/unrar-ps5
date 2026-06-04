@@ -202,6 +202,15 @@ bool IsUserAdmin()
 #ifdef USE_SSE
 SSE_VERSION _SSE_Version=GetSSEVersion();
 
+#if defined(PS5_PAYLOAD) && defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
+static void GetCpuId(uint Leaf,uint SubLeaf,uint Regs[4])
+{
+  __asm__ volatile("cpuid"
+                   : "=a"(Regs[0]), "=b"(Regs[1]), "=c"(Regs[2]), "=d"(Regs[3])
+                   : "a"(Leaf), "c"(SubLeaf));
+}
+#endif
+
 SSE_VERSION GetSSEVersion()
 {
 #ifdef _MSC_VER
@@ -220,6 +229,29 @@ SSE_VERSION GetSSEVersion()
   if (MaxSupported>=1)
   {
     __cpuid(CPUInfo, 1);
+    if ((CPUInfo[2] & 0x80000)!=0)
+      return SSE_SSE41;
+    if ((CPUInfo[2] & 0x200)!=0)
+      return SSE_SSSE3;
+    if ((CPUInfo[3] & 0x4000000)!=0)
+      return SSE_SSE2;
+    if ((CPUInfo[3] & 0x2000000)!=0)
+      return SSE_SSE;
+  }
+#elif defined(PS5_PAYLOAD) && defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
+  uint CPUInfo[4];
+  GetCpuId(0,0,CPUInfo);
+  uint MaxSupported=CPUInfo[0];
+
+  if (MaxSupported>=7)
+  {
+    GetCpuId(7,0,CPUInfo);
+    if ((CPUInfo[1] & 0x20)!=0)
+      return SSE_AVX2;
+  }
+  if (MaxSupported>=1)
+  {
+    GetCpuId(1,0,CPUInfo);
     if ((CPUInfo[2] & 0x80000)!=0)
       return SSE_SSE41;
     if ((CPUInfo[2] & 0x200)!=0)

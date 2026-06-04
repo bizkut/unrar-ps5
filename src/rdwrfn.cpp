@@ -1,5 +1,9 @@
 #include "rar.hpp"
 
+#ifdef PS5_PAYLOAD
+extern "C" void Ps5UnrarProgress(int Percent);
+#endif
+
 ComprDataIO::ComprDataIO()
 {
 #ifndef RAR_NOCRYPT
@@ -207,6 +211,9 @@ void ComprDataIO::ShowUnpRead(int64 ArcPos,int64 ArcSize)
     CommandData *Cmd=SrcArc->GetCommandData();
 
     int CurPercent=ToPercent(ArcPos,ArcSize);
+#ifdef PS5_PAYLOAD
+    Ps5UnrarProgress(CurPercent);
+#endif
     if (!Cmd->DisablePercentage && CurPercent!=LastPercent)
     {
       uiExtractProgress(CurUnpWrite,SrcArc->FileHead.UnpSize,ArcPos,ArcSize);
