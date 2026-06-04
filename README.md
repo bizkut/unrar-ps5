@@ -114,9 +114,9 @@ make send PS5_HOST=ps5ip PS5_PORT=9021
 
 ## GitHub Actions Releases
 
-This repo builds with GitHub Actions using the ARM64 Docker Hub SDK image `bizkut666/ps5-payload-sdk:libcxx`. The workflow enables QEMU on GitHub-hosted x64 runners and runs Docker with `--platform linux/arm64`.
+This repo builds with GitHub Actions using the ARM64 Docker Hub SDK image `bizkut666/ps5-payload-sdk:libcxx` on the native `ubuntu-24.04-arm` runner. Release builds run for `v*` tags; pull requests still build-test the payload.
 
-Every push to `master` and every pull request builds `unrar_ps5.elf` and uploads it as a workflow artifact. To create a GitHub Release with the ELF attached, push a version tag:
+Every pull request builds `unrar_ps5.elf` and uploads it as a workflow artifact. To create a GitHub Release with the ELF attached, push a version tag:
 
 ```sh
 git tag v1.0.0
