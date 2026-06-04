@@ -112,6 +112,21 @@ Or use the Makefile target:
 make send PS5_HOST=ps5ip PS5_PORT=9021
 ```
 
+## GitHub Actions Releases
+
+This repo builds with GitHub Actions using the Docker Hub SDK image:
+
+```text
+bizkut666/ps5-payload-sdk:libcxx
+```
+
+Every push to `master` and every pull request builds `unrar_ps5.elf` and uploads it as a workflow artifact. To create a GitHub Release with the ELF attached, push a version tag:
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
 ## Notifications And Logs
 
 The payload sends PS5 notifications for:

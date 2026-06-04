@@ -1,0 +1,44 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build PS5 payload
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build with PS5 payload SDK
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            -e PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk \
+            bizkut666/ps5-payload-sdk:libcxx \
+            make clean all
+
+      - name: Upload payload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unrar_ps5
+          path: unrar_ps5.elf
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: unrar_ps5.elf
