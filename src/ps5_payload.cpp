@@ -443,37 +443,61 @@ static void ApplySchedulingConfig(const PayloadConfig &Cfg)
   }
 }
 
-static bool FindFirstRar(std::string &Path,std::string &Error)
+static void CollectRarFiles(const std::string &Root,std::vector<std::string> &Paths,int Depth=0)
 {
-  DIR *Dir=opendir(UNRAR_DATA_DIR);
-  if (Dir==NULL)
-  {
-    Error="failed to open " UNRAR_DATA_DIR;
-    return false;
-  }
+  if (Depth>8 || Root==UNRAR_STAGE_DIR)
+    return;
 
-  std::vector<std::string> Names;
+  DIR *Dir=opendir(Root.c_str());
+  if (Dir==NULL)
+    return;
+
   for (;;)
   {
     struct dirent *Entry=readdir(Dir);
     if (Entry==NULL)
       break;
+
     std::string Name=Entry->d_name;
-    if (Name=="." || Name=="..")
+    if (Name=="." || Name==".." || (!Name.empty() && Name[0]=='.'))
       continue;
-    if (EndsWithNoCase(Name,".rar"))
-      Names.push_back(Name);
+
+    std::string FullPath=JoinPath(Root,Name);
+    struct stat St;
+    if (lstat(FullPath.c_str(),&St)!=0)
+      continue;
+
+    if (S_ISDIR(St.st_mode))
+    {
+      CollectRarFiles(FullPath,Paths,Depth+1);
+      continue;
+    }
+
+    if (S_ISREG(St.st_mode) && EndsWithNoCase(Name,".rar"))
+      Paths.push_back(FullPath);
   }
   closedir(Dir);
+}
 
-  if (Names.empty())
+static bool FindFirstRar(std::string &Path,std::string &Error)
+{
+  if (!IsDirPath(UNRAR_DATA_DIR))
   {
-    Error="no .rar file found in " UNRAR_DATA_DIR;
+    Error="failed to open " UNRAR_DATA_DIR;
     return false;
   }
 
-  std::sort(Names.begin(),Names.end());
-  Path=JoinPath(UNRAR_DATA_DIR,Names[0]);
+  std::vector<std::string> Paths;
+  CollectRarFiles(UNRAR_DATA_DIR,Paths);
+
+  if (Paths.empty())
+  {
+    Error="no .rar file found under " UNRAR_DATA_DIR;
+    return false;
+  }
+
+  std::sort(Paths.begin(),Paths.end());
+  Path=Paths[0];
   return true;
 }
 

@@ -19,7 +19,7 @@ For example:
 On injection, the payload:
 
 1. Creates `/data/unrar/config.ini` if it does not exist.
-2. Loads the configured archive, or the first `.rar` found in `/data/unrar/`.
+2. Loads the configured archive, or the first `.rar` found recursively under `/data/unrar/`.
 3. Applies optional scheduling settings.
 4. Removes the previous installed `<TitleID>-app` folder when it can infer the TitleID before extraction.
 5. Extracts into `/data/unrar/staging`.
@@ -47,7 +47,7 @@ Options:
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `filename` | empty | Archive to extract. If empty, the first `.rar` in `/data/unrar/` is used. Relative paths are resolved under `/data/unrar/`; absolute paths are used as-is. |
+| `filename` | empty | Archive to extract. If empty, the first `.rar` found recursively under `/data/unrar/` is used. Relative paths are resolved under `/data/unrar/`; absolute paths are used as-is. |
 | `rar_password` | empty | RAR password. Empty means no password is passed to UnRAR. |
 | `delete_after` | `0` | Set to `1`, `true`, `yes`, or `on` to delete archive volumes after a successful extraction. |
 | `extract_location` | `/data/homebrew` | Base install directory. Final path becomes `<extract_location>/<TitleID>-app`. |
@@ -154,7 +154,7 @@ cpu_mask=0
 
 ## Troubleshooting
 
-- `no .rar file found`: upload a `.rar` archive to `/data/unrar/` or set `filename=`.
+- `no .rar file found`: upload a `.rar` archive under `/data/unrar/` or set `filename=`.
 - `bad password` or `checksum or password error`: set `rar_password=` correctly.
 - `sce_sys/param.json not found after extraction`: the archive does not contain the expected PS5 app folder structure.
 - `TitleID not found`: `param.json` exists but does not contain a supported TitleID key.
