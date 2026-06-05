@@ -65,6 +65,43 @@ Logs, staging files, and the lock file stay under:
 /data/unrar/
 ```
 
+## Per-Archive Config
+
+You can put an `.ini` file next to a RAR archive to override the main config for that archive only. The preferred sidecar `.ini` uses the same base name as the archive set:
+
+```text
+/mnt/usb1/unrar/PPSA17221.rar
+/mnt/usb1/unrar/PPSA17221.ini
+```
+
+For multipart archives, use the archive set name:
+
+```text
+/mnt/usb1/unrar/PPSA17221.part1.rar
+/mnt/usb1/unrar/PPSA17221.ini
+```
+
+If the archive path contains a TitleID, a matching TitleID `.ini` in the same folder is also valid:
+
+```text
+/mnt/usb1/unrar/My_Game_PPSA17221.part1.rar
+/mnt/usb1/unrar/PPSA17221.ini
+```
+
+When the archive path contains a TitleID, the payload can also use `PPSA17221.ini` from the normal config locations:
+
+```text
+<USB>/unrar/PPSA17221.ini
+<USB>/PPSA17221.ini
+/data/unrar/PPSA17221.ini
+```
+
+Archive-local `.ini` files are checked first. The normal config locations are a fallback for TitleID `.ini` files only when the archive path contains that TitleID.
+
+The payload reads `config.ini` first, builds the archive queue, then applies the sidecar `.ini` before extracting that archive. This lets sidecar files set archive-specific values such as `rar_password=`, `extract_location=`, `delete_after=`, `threads=`, `nice=`, `cpu_mask=`, or `progress=`.
+
+`filename=` entries in a sidecar `.ini` are ignored. Use the main `config.ini` to choose which archives to extract.
+
 ## Config Example
 
 Default config:
@@ -113,7 +150,7 @@ progress=10
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `filename` | empty | Archive to extract. Can be repeated. If no `filename=` is set, the first `.rar` found recursively under `rar_location` is extracted. Relative paths resolve under `rar_location`; absolute paths are used as-is. |
+| `filename` | empty | Archive to extract. Can be repeated in the main `config.ini`. If no `filename=` is set, the payload scans `.rar` files recursively under `rar_location`, skips already installed TitleIDs, and stops after the first archive that installs. Relative paths resolve under `rar_location`; absolute paths are used as-is. Ignored in sidecar `.ini` files. |
 | `rar_location` | `/data/unrar` | Base directory for archive search and relative `filename=` values. Set this to a USB path to extract archives from external storage. |
 | `rar_password` | empty | RAR password. Empty means no password is used. |
 | `delete_after` | `0` | Set to `1`, `true`, `yes`, or `on` to delete RAR archive volumes after a successful extraction. |
@@ -153,6 +190,8 @@ Only `game.part1.rar` is processed.
 
 Archives are extracted one at a time. Parallel extraction is intentionally not used because it would compete for CPU, disk I/O, memory, and install-path state on the PS5.
 
+When `filename=` is empty, auto-discovery scans all `.rar` archive sets under `rar_location`. If an archive path contains a TitleID and `<extract_location>/<TitleID>-app` already exists, that archive is skipped before extraction and the payload continues to the next archive. Auto-discovery stops after the first archive that successfully installs. Use repeated `filename=` entries when you want to process multiple specific archives in one run.
+
 ## Notifications And Logs
 
 The payload sends PS5 notifications for:
@@ -176,6 +215,7 @@ Useful log fields include selected config path, selected archive, RAR location, 
 - `bad password` or `checksum or password error`: set `rar_password=` correctly.
 - `sce_sys/param.json not found after extraction`: the archive does not contain the expected PS5 app folder structure.
 - `TitleID not found`: `param.json` exists but does not contain a supported TitleID key.
+- `already installed`: `<extract_location>/<TitleID>-app` already exists, so that archive is skipped and the existing folder is left untouched.
 - `extraction already running`: another payload instance is active.
 - `cpu_mask ... result=fail`: CPU affinity was rejected; leave `cpu_mask=0`.
 
@@ -185,11 +225,11 @@ On injection, the payload:
 
 1. Creates `/data/unrar/config.ini` if no valid USB config or internal config exists.
 2. Reads config from USB first when a valid USB config is present.
-3. Builds an archive queue from repeated `filename=` entries, or finds the first `.rar` recursively under `rar_location`.
+3. Builds an archive queue from repeated `filename=` entries, or auto-discovers `.rar` files recursively under `rar_location`.
 4. Collapses duplicate multipart entries so each archive set extracts once.
 5. Applies optional scheduling settings.
 6. Extracts each archive into `/data/unrar/staging`.
-7. Finds `sce_sys/param.json`, reads the TitleID, removes any existing final install folder, and moves the extracted app into `<extract_location>/<TitleID>-app`.
+7. Finds `sce_sys/param.json`, reads the TitleID, and moves the extracted app into `<extract_location>/<TitleID>-app` when that folder does not already exist.
 8. Optionally deletes archive volumes after a successful extraction.
 9. Writes progress and errors to notifications and `/data/unrar/unrar.log`.
 

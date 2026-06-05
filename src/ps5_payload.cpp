@@ -85,6 +85,9 @@ struct LockGuard
 
 static int LastNotifiedProgress=-10;
 static int ProgressInterval=10;
+static cpuset_t OriginalCpuAffinity;
+static bool HaveOriginalCpuAffinity=false;
+static bool CpuAffinityApplied=false;
 
 static bool EndsWithNoCase(const std::string &Value,const std::string &Suffix)
 {
@@ -173,20 +176,24 @@ static bool PathExists(const std::string &Path);
 static bool RemoveTree(const std::string &Path,std::string &Error);
 static void LogLine(const char *Fmt,...);
 
-static bool RemoveExistingInstallBeforeExtract(const PayloadConfig &Cfg,
-                                               const std::string &ArchivePath,
-                                               std::string &Error)
+enum NormalizeResult
 {
-  std::string TitleId;
-  if (!FindTitleIdInText(BaseName(ArchivePath),TitleId))
-    return true;
+  NORMALIZE_ERROR,
+  NORMALIZE_INSTALLED,
+  NORMALIZE_SKIPPED
+};
 
-  std::string FinalPath=JoinPath(Cfg.extract_location,TitleId+"-app");
-  if (!PathExists(FinalPath))
-    return true;
+static bool ShouldSkipExistingInstallBeforeExtract(const PayloadConfig &Cfg,
+                                                   const std::string &ArchivePath,
+                                                   std::string &TitleId,
+                                                   std::string &FinalPath)
+{
+  if (!FindTitleIdInText(BaseName(ArchivePath),TitleId) &&
+      !FindTitleIdInText(ArchivePath,TitleId))
+    return false;
 
-  LogLine("pre_remove final_path=%s",FinalPath.c_str());
-  return RemoveTree(FinalPath,Error);
+  FinalPath=JoinPath(Cfg.extract_location,TitleId+"-app");
+  return PathExists(FinalPath);
 }
 
 static bool PathExists(const std::string &Path)
@@ -383,9 +390,8 @@ static void AddUsbConfigRoot(const std::string &UsbRoot,std::vector<std::string>
   Roots.push_back(UsbRoot);
 }
 
-static std::string SelectConfigPath()
+static void CollectUsbConfigRoots(std::vector<std::string> &Roots)
 {
-  std::vector<std::string> Roots;
   AddUsbConfigRoot("/mnt/usb0",Roots);
   AddUsbConfigRoot("/mnt/usb1",Roots);
   AddUsbConfigRoot("/mnt/usb2",Roots);
@@ -397,20 +403,39 @@ static std::string SelectConfigPath()
   AddUsbConfigRoot("/mnt/usb",Roots);
   AddUsbConfigRoot("/usb0",Roots);
   AddUsbConfigRoot("/usb1",Roots);
+}
+
+static std::string SelectNamedConfigPath(const std::string &ConfigName)
+{
+  std::vector<std::string> Roots;
+  CollectUsbConfigRoots(Roots);
 
   for (size_t I=0;I<Roots.size();I++)
   {
-    std::string Path=JoinPath(Roots[I],"unrar/config.ini");
+    std::string Path=JoinPath(Roots[I],"unrar/"+ConfigName);
     if (ConfigLooksValid(Path))
       return Path;
   }
 
   for (size_t I=0;I<Roots.size();I++)
   {
-    std::string Path=JoinPath(Roots[I],"config.ini");
+    std::string Path=JoinPath(Roots[I],ConfigName);
     if (ConfigLooksValid(Path))
       return Path;
   }
+
+  std::string InternalPath=JoinPath(UNRAR_DATA_DIR,ConfigName);
+  if (ConfigLooksValid(InternalPath))
+    return InternalPath;
+
+  return "";
+}
+
+static std::string SelectConfigPath()
+{
+  std::string Path=SelectNamedConfigPath("config.ini");
+  if (!Path.empty())
+    return Path;
 
   return UNRAR_CONFIG;
 }
@@ -445,29 +470,8 @@ static bool EnsureDefaultConfig(const std::string &ConfigPath,std::string &Error
   return true;
 }
 
-static bool LoadConfig(PayloadConfig &Cfg,std::string &Error)
+static void ApplyConfigData(PayloadConfig &Cfg,const std::string &Data,bool AllowFilenames)
 {
-  Cfg.filenames.clear();
-  Cfg.config_path=SelectConfigPath();
-  Cfg.rar_location=UNRAR_DATA_DIR;
-  Cfg.rar_password.clear();
-  Cfg.delete_after=false;
-  Cfg.extract_location=DEFAULT_EXTRACT_LOCATION;
-  Cfg.threads=0;
-  Cfg.nice=-20;
-  Cfg.cpu_mask=0;
-  Cfg.progress=10;
-
-  if (!EnsureDefaultConfig(Cfg.config_path,Error))
-    return false;
-
-  std::string Data;
-  if (!ReadSmallFile(Cfg.config_path,Data))
-  {
-    Error="failed to read "+Cfg.config_path;
-    return false;
-  }
-
   size_t Pos=0;
   while (Pos<Data.size())
   {
@@ -487,7 +491,7 @@ static bool LoadConfig(PayloadConfig &Cfg,std::string &Error)
     std::string Value=Trim(Line.substr(Eq+1));
     if (Key=="filename")
     {
-      if (!Value.empty())
+      if (AllowFilenames && !Value.empty())
         Cfg.filenames.push_back(Value);
     }
     else if (Key=="rar_location" && !Value.empty())
@@ -513,7 +517,45 @@ static bool LoadConfig(PayloadConfig &Cfg,std::string &Error)
         Cfg.progress=100;
     }
   }
+}
 
+static bool LoadConfig(PayloadConfig &Cfg,std::string &Error)
+{
+  Cfg.filenames.clear();
+  Cfg.config_path=SelectConfigPath();
+  Cfg.rar_location=UNRAR_DATA_DIR;
+  Cfg.rar_password.clear();
+  Cfg.delete_after=false;
+  Cfg.extract_location=DEFAULT_EXTRACT_LOCATION;
+  Cfg.threads=0;
+  Cfg.nice=-20;
+  Cfg.cpu_mask=0;
+  Cfg.progress=10;
+
+  if (!EnsureDefaultConfig(Cfg.config_path,Error))
+    return false;
+
+  std::string Data;
+  if (!ReadSmallFile(Cfg.config_path,Data))
+  {
+    Error="failed to read "+Cfg.config_path;
+    return false;
+  }
+
+  ApplyConfigData(Cfg,Data,true);
+  return true;
+}
+
+static bool ApplyConfigFile(PayloadConfig &Cfg,const std::string &ConfigPath,
+                            bool AllowFilenames,std::string &Error)
+{
+  std::string Data;
+  if (!ReadSmallFile(ConfigPath,Data))
+  {
+    Error="failed to read "+ConfigPath;
+    return false;
+  }
+  ApplyConfigData(Cfg,Data,AllowFilenames);
   return true;
 }
 
@@ -535,10 +577,29 @@ static void ApplySchedulingConfig(const PayloadConfig &Cfg)
       if ((Cfg.cpu_mask & ((uint64)1<<Cpu))!=0)
         CPU_SET(Cpu,&Mask);
 
+    if (!HaveOriginalCpuAffinity &&
+        cpuset_getaffinity(CPU_LEVEL_WHICH,CPU_WHICH_PID,getpid(),
+                           sizeof(OriginalCpuAffinity),&OriginalCpuAffinity)==0)
+      HaveOriginalCpuAffinity=true;
+
     if (cpuset_setaffinity(CPU_LEVEL_WHICH,CPU_WHICH_PID,getpid(),sizeof(Mask),&Mask)==0)
+    {
+      CpuAffinityApplied=true;
       LogLine("cpu_mask=0x%llx result=ok",(unsigned long long)Cfg.cpu_mask);
+    }
     else
       LogLine("cpu_mask=0x%llx result=fail errno=%d",(unsigned long long)Cfg.cpu_mask,errno);
+  }
+  else if (CpuAffinityApplied && HaveOriginalCpuAffinity)
+  {
+    if (cpuset_setaffinity(CPU_LEVEL_WHICH,CPU_WHICH_PID,getpid(),
+                           sizeof(OriginalCpuAffinity),&OriginalCpuAffinity)==0)
+    {
+      CpuAffinityApplied=false;
+      LogLine("cpu_mask=0x0 result=ok");
+    }
+    else
+      LogLine("cpu_mask=0x0 result=fail errno=%d",errno);
   }
 }
 
@@ -578,7 +639,8 @@ static void CollectRarFiles(const std::string &Root,std::vector<std::string> &Pa
   closedir(Dir);
 }
 
-static bool FindFirstRar(const std::string &RarLocation,std::string &Path,std::string &Error)
+static bool FindRarFiles(const std::string &RarLocation,std::vector<std::string> &Paths,
+                         std::string &Error)
 {
   if (!IsDirPath(RarLocation))
   {
@@ -586,7 +648,7 @@ static bool FindFirstRar(const std::string &RarLocation,std::string &Path,std::s
     return false;
   }
 
-  std::vector<std::string> Paths;
+  Paths.clear();
   CollectRarFiles(RarLocation,Paths);
 
   if (Paths.empty())
@@ -596,7 +658,6 @@ static bool FindFirstRar(const std::string &RarLocation,std::string &Path,std::s
   }
 
   std::sort(Paths.begin(),Paths.end());
-  Path=Paths[0];
   return true;
 }
 
@@ -605,10 +666,8 @@ static bool ResolveConfiguredArchivePaths(const PayloadConfig &Cfg,std::vector<s
   ArchivePaths.clear();
   if (Cfg.filenames.empty())
   {
-    std::string ArchivePath;
-    if (!FindFirstRar(Cfg.rar_location,ArchivePath,Error))
+    if (!FindRarFiles(Cfg.rar_location,ArchivePaths,Error))
       return false;
-    ArchivePaths.push_back(ArchivePath);
     return true;
   }
 
@@ -890,18 +949,18 @@ static int RunUnrarExtract(const std::string &ArchivePath,const std::string &Des
   return ErrHandler.GetErrorCode();
 }
 
-static bool NormalizeExtractedApp(const PayloadConfig &Cfg,std::string &TitleId,
-                                  std::string &FinalPath,std::string &Error)
+static NormalizeResult NormalizeExtractedApp(const PayloadConfig &Cfg,std::string &TitleId,
+                                             std::string &FinalPath,std::string &Error)
 {
   std::string ParamPath;
   if (!FindParamJson(UNRAR_STAGE_DIR,ParamPath))
   {
     Error="sce_sys/param.json not found after extraction";
-    return false;
+    return NORMALIZE_ERROR;
   }
 
   if (!ReadTitleId(ParamPath,TitleId,Error))
-    return false;
+    return NORMALIZE_ERROR;
 
   FinalPath=JoinPath(Cfg.extract_location,TitleId+"-app");
   std::string ExistingRoot=JoinPath(UNRAR_STAGE_DIR,TitleId+"-app");
@@ -910,19 +969,19 @@ static bool NormalizeExtractedApp(const PayloadConfig &Cfg,std::string &TitleId,
   if (!MkdirAll(Cfg.extract_location))
   {
     Error="failed to create "+Cfg.extract_location;
-    return false;
+    return NORMALIZE_ERROR;
   }
 
-  if (PathExists(FinalPath) && !RemoveTree(FinalPath,Error))
-    return false;
+  if (PathExists(FinalPath))
+    return NORMALIZE_SKIPPED;
 
   if (PathExists(ExistingRoot))
-    return MovePath(ExistingRoot,FinalPath,Error);
+    return MovePath(ExistingRoot,FinalPath,Error) ? NORMALIZE_INSTALLED:NORMALIZE_ERROR;
 
   if (ParamRoot!=UNRAR_STAGE_DIR)
-    return MovePath(ParamRoot,FinalPath,Error);
+    return MovePath(ParamRoot,FinalPath,Error) ? NORMALIZE_INSTALLED:NORMALIZE_ERROR;
 
-  return MoveDirectoryContents(UNRAR_STAGE_DIR,FinalPath,Error);
+  return MoveDirectoryContents(UNRAR_STAGE_DIR,FinalPath,Error) ? NORMALIZE_INSTALLED:NORMALIZE_ERROR;
 }
 
 static std::string GetArchiveStem(const std::string &Name)
@@ -959,6 +1018,32 @@ static std::string GetArchiveStem(const std::string &Name)
   }
 
   return Stem;
+}
+
+static bool ApplySidecarConfigForArchive(PayloadConfig &Cfg,const std::string &ArchivePath,
+                                         std::string &SidecarConfigPath,std::string &Error)
+{
+  std::string Path=JoinPath(DirName(ArchivePath),GetArchiveStem(BaseName(ArchivePath))+".ini");
+  if (!ConfigLooksValid(Path))
+  {
+    std::string TitleId;
+    if (!FindTitleIdInText(ArchivePath,TitleId))
+      return true;
+
+    Path=JoinPath(DirName(ArchivePath),TitleId+".ini");
+    if (!ConfigLooksValid(Path))
+    {
+      Path=SelectNamedConfigPath(TitleId+".ini");
+      if (Path.empty())
+        return true;
+    }
+  }
+
+  if (!ApplyConfigFile(Cfg,Path,false,Error))
+    return false;
+
+  SidecarConfigPath=Path;
+  return true;
 }
 
 static bool IsArchivePartName(const std::string &Name,const std::string &Stem)
@@ -1111,22 +1196,29 @@ static void DeleteArchiveFiles(const std::string &ArchivePath)
 }
 
 static int ExtractArchive(const PayloadConfig &Cfg,const std::string &ArchivePath,
-                          size_t Index,size_t Total)
+                          const std::string &SidecarConfigPath,size_t Index,size_t Total,
+                          bool &Installed)
 {
   std::string Error;
+  Installed=false;
 
   Notify("UnRAR: starting %u/%u %s",(unsigned)(Index+1),(unsigned)Total,BaseName(ArchivePath).c_str());
-  LogLine("start archive=%s config=%s rar_location=%s extract_location=%s delete_after=%u threads=%u nice=%d cpu_mask=0x%llx progress=%d",
-          ArchivePath.c_str(),Cfg.config_path.c_str(),Cfg.rar_location.c_str(),
-          Cfg.extract_location.c_str(),Cfg.delete_after ? 1:0,Cfg.threads,
-          Cfg.nice,(unsigned long long)Cfg.cpu_mask,Cfg.progress);
+  LogLine("start archive=%s config=%s sidecar_config=%s rar_location=%s extract_location=%s delete_after=%u threads=%u nice=%d cpu_mask=0x%llx progress=%d",
+          ArchivePath.c_str(),Cfg.config_path.c_str(),
+          SidecarConfigPath.empty() ? "none":SidecarConfigPath.c_str(),
+          Cfg.rar_location.c_str(),Cfg.extract_location.c_str(),
+          Cfg.delete_after ? 1:0,Cfg.threads,Cfg.nice,
+          (unsigned long long)Cfg.cpu_mask,Cfg.progress);
   LastNotifiedProgress=-10;
 
-  if (!RemoveExistingInstallBeforeExtract(Cfg,ArchivePath,Error))
+  std::string ExistingTitleId;
+  std::string ExistingFinalPath;
+  if (ShouldSkipExistingInstallBeforeExtract(Cfg,ArchivePath,ExistingTitleId,ExistingFinalPath))
   {
-    Notify("UnRAR error: %s",Error.c_str());
-    LogLine("pre_remove_error %s",Error.c_str());
-    return 1;
+    Notify("UnRAR skipped: %s already installed",ExistingTitleId.c_str());
+    LogLine("skip archive=%s title_id=%s final_path=%s reason=already_installed_precheck",
+            ArchivePath.c_str(),ExistingTitleId.c_str(),ExistingFinalPath.c_str());
+    return RARX_SUCCESS;
   }
 
   if (!RemoveTree(UNRAR_STAGE_DIR,Error))
@@ -1157,7 +1249,8 @@ static int ExtractArchive(const PayloadConfig &Cfg,const std::string &ArchivePat
   std::string TitleId;
   std::string FinalPath;
   uint64 NormalizeStart=NowMs();
-  if (!NormalizeExtractedApp(Cfg,TitleId,FinalPath,Error))
+  NormalizeResult Result=NormalizeExtractedApp(Cfg,TitleId,FinalPath,Error);
+  if (Result==NORMALIZE_ERROR)
   {
     Notify("UnRAR error: %s",Error.c_str());
     LogLine("normalize_error %s",Error.c_str());
@@ -1167,6 +1260,15 @@ static int ExtractArchive(const PayloadConfig &Cfg,const std::string &ArchivePat
 
   RemoveTree(UNRAR_STAGE_DIR,Error);
 
+  if (Result==NORMALIZE_SKIPPED)
+  {
+    Notify("UnRAR skipped: %s already installed",TitleId.c_str());
+    LogLine("skip archive=%s title_id=%s final_path=%s extract_ms=%llu normalize_ms=%llu reason=already_installed",
+            ArchivePath.c_str(),TitleId.c_str(),FinalPath.c_str(),
+            (unsigned long long)ExtractMs,(unsigned long long)NormalizeMs);
+    return Code;
+  }
+
   if (Cfg.delete_after)
     DeleteArchiveFiles(ArchivePath);
 
@@ -1174,6 +1276,7 @@ static int ExtractArchive(const PayloadConfig &Cfg,const std::string &ArchivePat
   LogLine("done archive=%s title_id=%s final_path=%s extract_ms=%llu normalize_ms=%llu",
           ArchivePath.c_str(),TitleId.c_str(),FinalPath.c_str(),
           (unsigned long long)ExtractMs,(unsigned long long)NormalizeMs);
+  Installed=true;
   return Code;
 }
 
@@ -1206,6 +1309,7 @@ int main(int argc,char *argv[])
     return 1;
   }
 
+  bool AutoMode=Cfg.filenames.empty();
   std::vector<std::string> Archives;
   if (!BuildArchiveQueue(Cfg,Archives,Error))
   {
@@ -1216,24 +1320,50 @@ int main(int argc,char *argv[])
 
   if (argc>1 && argv[1]!=NULL && argv[1][0]!=0)
   {
+    AutoMode=false;
     Archives.clear();
     std::vector<std::string> Keys;
     AddUniqueArchive(Archives,Keys,argv[1]);
   }
 
-  ApplySchedulingConfig(Cfg);
   ProgressInterval=Cfg.progress;
 
   LogLine("queue config=%s archives=%u progress=%d",Cfg.config_path.c_str(),
           (unsigned)Archives.size(),Cfg.progress);
   int FinalCode=RARX_SUCCESS;
+  bool AnyInstalled=false;
   for (size_t I=0;I<Archives.size();I++)
   {
-    int Code=ExtractArchive(Cfg,Archives[I],I,Archives.size());
+    PayloadConfig ArchiveCfg=Cfg;
+    std::string SidecarConfigPath;
+    if (!ApplySidecarConfigForArchive(ArchiveCfg,Archives[I],SidecarConfigPath,Error))
+    {
+      Notify("UnRAR error: %s",Error.c_str());
+      LogLine("sidecar_config_error archive=%s error=%s",Archives[I].c_str(),Error.c_str());
+      return 1;
+    }
+
+    ApplySchedulingConfig(ArchiveCfg);
+    ProgressInterval=ArchiveCfg.progress;
+    bool Installed=false;
+    int Code=ExtractArchive(ArchiveCfg,Archives[I],SidecarConfigPath,I,Archives.size(),
+                            Installed);
     if (Code!=RARX_SUCCESS && Code!=RARX_WARNING)
       return Code;
     if (Code==RARX_WARNING)
       FinalCode=Code;
+    if (Installed)
+    {
+      AnyInstalled=true;
+      if (AutoMode)
+        break;
+    }
+  }
+
+  if (AutoMode && !AnyInstalled)
+  {
+    Notify("UnRAR: no new archives to extract");
+    LogLine("queue_result reason=no_new_archives");
   }
 
   return FinalCode;
