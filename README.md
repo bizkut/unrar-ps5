@@ -59,11 +59,19 @@ Search priority:
 
 `<USB>/unrar/config.ini` is preferred because it avoids accidentally using an unrelated root-level config file. A USB config is accepted only if it contains at least one known unrar-ps5 key, such as `filename=`, `rar_location=`, `extract_location=`, or `rar_password=`.
 
-Logs, staging files, and the lock file stay under:
+Logs and the lock file stay under:
 
 ```text
 /data/unrar/
 ```
+
+Temporary extraction staging is created under the effective install location:
+
+```text
+<extract_location>/.unrar-staging/
+```
+
+Because sidecar `.ini` files are applied before staging is created, a sidecar such as `extract_location=/mnt/usb1/homebrew` stages on the USB drive instead of extracting to internal storage first.
 
 ## Per-Archive Config
 
@@ -228,7 +236,7 @@ On injection, the payload:
 3. Builds an archive queue from repeated `filename=` entries, or auto-discovers `.rar` files recursively under `rar_location`.
 4. Collapses duplicate multipart entries so each archive set extracts once.
 5. Applies optional scheduling settings.
-6. Extracts each archive into `/data/unrar/staging`.
+6. Extracts each archive into `<extract_location>/.unrar-staging`.
 7. Finds `sce_sys/param.json`, reads the TitleID, and moves the extracted app into `<extract_location>/<TitleID>-app` when that folder does not already exist.
 8. Optionally deletes archive volumes after a successful extraction.
 9. Writes progress and errors to notifications and `/data/unrar/unrar.log`.

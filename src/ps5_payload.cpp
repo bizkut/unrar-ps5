@@ -20,8 +20,8 @@
 
 #define UNRAR_DATA_DIR "/data/unrar"
 #define UNRAR_CONFIG UNRAR_DATA_DIR "/config.ini"
-#define UNRAR_STAGE_DIR UNRAR_DATA_DIR "/staging"
 #define DEFAULT_EXTRACT_LOCATION "/data/homebrew"
+#define STAGING_DIR_NAME ".unrar-staging"
 
 typedef struct notify_request
 {
@@ -605,7 +605,7 @@ static void ApplySchedulingConfig(const PayloadConfig &Cfg)
 
 static void CollectRarFiles(const std::string &Root,std::vector<std::string> &Paths,int Depth=0)
 {
-  if (Depth>8 || Root==UNRAR_STAGE_DIR)
+  if (Depth>8 || BaseName(Root)==STAGING_DIR_NAME)
     return;
 
   DIR *Dir=opendir(Root.c_str());
@@ -949,11 +949,12 @@ static int RunUnrarExtract(const std::string &ArchivePath,const std::string &Des
   return ErrHandler.GetErrorCode();
 }
 
-static NormalizeResult NormalizeExtractedApp(const PayloadConfig &Cfg,std::string &TitleId,
+static NormalizeResult NormalizeExtractedApp(const PayloadConfig &Cfg,const std::string &StagePath,
+                                             std::string &TitleId,
                                              std::string &FinalPath,std::string &Error)
 {
   std::string ParamPath;
-  if (!FindParamJson(UNRAR_STAGE_DIR,ParamPath))
+  if (!FindParamJson(StagePath,ParamPath))
   {
     Error="sce_sys/param.json not found after extraction";
     return NORMALIZE_ERROR;
@@ -963,7 +964,7 @@ static NormalizeResult NormalizeExtractedApp(const PayloadConfig &Cfg,std::strin
     return NORMALIZE_ERROR;
 
   FinalPath=JoinPath(Cfg.extract_location,TitleId+"-app");
-  std::string ExistingRoot=JoinPath(UNRAR_STAGE_DIR,TitleId+"-app");
+  std::string ExistingRoot=JoinPath(StagePath,TitleId+"-app");
   std::string ParamRoot=DirName(DirName(ParamPath));
 
   if (!MkdirAll(Cfg.extract_location))
@@ -978,10 +979,10 @@ static NormalizeResult NormalizeExtractedApp(const PayloadConfig &Cfg,std::strin
   if (PathExists(ExistingRoot))
     return MovePath(ExistingRoot,FinalPath,Error) ? NORMALIZE_INSTALLED:NORMALIZE_ERROR;
 
-  if (ParamRoot!=UNRAR_STAGE_DIR)
+  if (ParamRoot!=StagePath)
     return MovePath(ParamRoot,FinalPath,Error) ? NORMALIZE_INSTALLED:NORMALIZE_ERROR;
 
-  return MoveDirectoryContents(UNRAR_STAGE_DIR,FinalPath,Error) ? NORMALIZE_INSTALLED:NORMALIZE_ERROR;
+  return MoveDirectoryContents(StagePath,FinalPath,Error) ? NORMALIZE_INSTALLED:NORMALIZE_ERROR;
 }
 
 static std::string GetArchiveStem(const std::string &Name)
@@ -1201,12 +1202,13 @@ static int ExtractArchive(const PayloadConfig &Cfg,const std::string &ArchivePat
 {
   std::string Error;
   Installed=false;
+  std::string StagePath=JoinPath(Cfg.extract_location,STAGING_DIR_NAME);
 
   Notify("UnRAR: starting %u/%u %s",(unsigned)(Index+1),(unsigned)Total,BaseName(ArchivePath).c_str());
-  LogLine("start archive=%s config=%s sidecar_config=%s rar_location=%s extract_location=%s delete_after=%u threads=%u nice=%d cpu_mask=0x%llx progress=%d",
+  LogLine("start archive=%s config=%s sidecar_config=%s rar_location=%s extract_location=%s stage_path=%s delete_after=%u threads=%u nice=%d cpu_mask=0x%llx progress=%d",
           ArchivePath.c_str(),Cfg.config_path.c_str(),
           SidecarConfigPath.empty() ? "none":SidecarConfigPath.c_str(),
-          Cfg.rar_location.c_str(),Cfg.extract_location.c_str(),
+          Cfg.rar_location.c_str(),Cfg.extract_location.c_str(),StagePath.c_str(),
           Cfg.delete_after ? 1:0,Cfg.threads,Cfg.nice,
           (unsigned long long)Cfg.cpu_mask,Cfg.progress);
   LastNotifiedProgress=-10;
@@ -1221,21 +1223,21 @@ static int ExtractArchive(const PayloadConfig &Cfg,const std::string &ArchivePat
     return RARX_SUCCESS;
   }
 
-  if (!RemoveTree(UNRAR_STAGE_DIR,Error))
+  if (!RemoveTree(StagePath,Error))
   {
     Notify("UnRAR error: %s",Error.c_str());
     LogLine("staging_error %s",Error.c_str());
     return 1;
   }
-  if (!MkdirAll(UNRAR_STAGE_DIR))
+  if (!MkdirAll(StagePath))
   {
     Notify("UnRAR error: failed to create staging directory");
-    LogLine("staging_error failed to create staging directory");
+    LogLine("staging_error failed to create staging directory: %s",StagePath.c_str());
     return 1;
   }
 
   uint64 ExtractStart=NowMs();
-  int Code=RunUnrarExtract(ArchivePath,UNRAR_STAGE_DIR,Cfg.rar_password,Cfg.threads);
+  int Code=RunUnrarExtract(ArchivePath,StagePath,Cfg.rar_password,Cfg.threads);
   uint64 ExtractMs=NowMs()-ExtractStart;
   LogLine("extract_result archive=%s code=%d reason=%s elapsed_ms=%llu",
           ArchivePath.c_str(),Code,ExitReason((RAR_EXIT)Code),(unsigned long long)ExtractMs);
@@ -1249,7 +1251,7 @@ static int ExtractArchive(const PayloadConfig &Cfg,const std::string &ArchivePat
   std::string TitleId;
   std::string FinalPath;
   uint64 NormalizeStart=NowMs();
-  NormalizeResult Result=NormalizeExtractedApp(Cfg,TitleId,FinalPath,Error);
+  NormalizeResult Result=NormalizeExtractedApp(Cfg,StagePath,TitleId,FinalPath,Error);
   if (Result==NORMALIZE_ERROR)
   {
     Notify("UnRAR error: %s",Error.c_str());
@@ -1258,7 +1260,7 @@ static int ExtractArchive(const PayloadConfig &Cfg,const std::string &ArchivePat
   }
   uint64 NormalizeMs=NowMs()-NormalizeStart;
 
-  RemoveTree(UNRAR_STAGE_DIR,Error);
+  RemoveTree(StagePath,Error);
 
   if (Result==NORMALIZE_SKIPPED)
   {
