@@ -1,4 +1,5 @@
 #include "rar.hpp"
+#include "ps5_7z.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -35,8 +36,8 @@ struct PayloadConfig
 {
   std::vector<std::string> filenames;
   std::string config_path;
-  std::string rar_location;
-  std::string rar_password;
+  std::string archive_location;
+  std::string archive_password;
   bool delete_after;
   std::string extract_location;
   uint threads;
@@ -183,6 +184,23 @@ enum NormalizeResult
   NORMALIZE_SKIPPED
 };
 
+enum ArchiveType
+{
+  ARCHIVE_UNKNOWN,
+  ARCHIVE_RAR,
+  ARCHIVE_7Z
+};
+
+static const char *ArchiveTypeName(ArchiveType Type)
+{
+  switch(Type)
+  {
+    case ARCHIVE_RAR: return "rar";
+    case ARCHIVE_7Z: return "7z";
+    default: return "unknown";
+  }
+}
+
 static bool ShouldSkipExistingInstallBeforeExtract(const PayloadConfig &Cfg,
                                                    const std::string &ArchivePath,
                                                    std::string &TitleId,
@@ -261,6 +279,47 @@ static bool ReadSmallFile(const std::string &Path,std::string &Data,size_t MaxSi
   return true;
 }
 
+static bool ReadFilePrefix(const std::string &Path,unsigned char *Buf,size_t BufSize,size_t &ReadSize)
+{
+  ReadSize=0;
+  int Fd=open(Path.c_str(),O_RDONLY);
+  if (Fd<0)
+    return false;
+  ssize_t Got=read(Fd,Buf,BufSize);
+  close(Fd);
+  if (Got<0)
+    return false;
+  ReadSize=(size_t)Got;
+  return true;
+}
+
+static ArchiveType DetectArchiveType(const std::string &Path)
+{
+  unsigned char Magic[8];
+  size_t MagicSize=0;
+  if (ReadFilePrefix(Path,Magic,sizeof(Magic),MagicSize))
+  {
+    if (MagicSize>=7 &&
+        Magic[0]==0x52 && Magic[1]==0x61 && Magic[2]==0x72 && Magic[3]==0x21 &&
+        Magic[4]==0x1a && Magic[5]==0x07 && (Magic[6]==0x00 || Magic[6]==0x01))
+      return ARCHIVE_RAR;
+    if (MagicSize>=6 &&
+        Magic[0]==0x37 && Magic[1]==0x7a && Magic[2]==0xbc &&
+        Magic[3]==0xaf && Magic[4]==0x27 && Magic[5]==0x1c)
+      return ARCHIVE_7Z;
+  }
+
+  std::string Name=ToLowerAscii(BaseName(Path));
+  if (EndsWithNoCase(Name,".rar") ||
+      (Name.size()>4 && Name[Name.size()-4]=='.' && Name[Name.size()-3]=='r' &&
+       std::isdigit((unsigned char)Name[Name.size()-2]) &&
+       std::isdigit((unsigned char)Name[Name.size()-1])))
+    return ARCHIVE_RAR;
+  if (EndsWithNoCase(Name,".7z") || EndsWithNoCase(Name,".7z.001"))
+    return ARCHIVE_7Z;
+  return ARCHIVE_UNKNOWN;
+}
+
 static bool WriteTextFile(const std::string &Path,const char *Data)
 {
   int Fd=open(Path.c_str(),O_WRONLY|O_CREAT|O_TRUNC,0666);
@@ -286,7 +345,8 @@ static bool WriteTextFile(const std::string &Path,const char *Data)
 
 static bool IsKnownConfigKey(const std::string &Key)
 {
-  return Key=="filename" || Key=="rar_location" || Key=="rar_password" ||
+  return Key=="filename" || Key=="archive_location" || Key=="archive_password" ||
+         Key=="rar_location" || Key=="rar_password" ||
          Key=="delete_after" || Key=="extract_location" || Key=="threads" ||
          Key=="nice" || Key=="cpu_mask" || Key=="progress";
 }
@@ -453,8 +513,8 @@ static bool EnsureDefaultConfig(const std::string &ConfigPath,std::string &Error
 
   static const char DefaultConfig[]=
     "filename=\n"
-    "rar_location=/data/unrar\n"
-    "rar_password=\n"
+    "archive_location=/data/unrar\n"
+    "archive_password=\n"
     "delete_after=0\n"
     "extract_location=/data/homebrew\n"
     "threads=0\n"
@@ -494,10 +554,10 @@ static void ApplyConfigData(PayloadConfig &Cfg,const std::string &Data,bool Allo
       if (AllowFilenames && !Value.empty())
         Cfg.filenames.push_back(Value);
     }
-    else if (Key=="rar_location" && !Value.empty())
-      Cfg.rar_location=Value;
-    else if (Key=="rar_password")
-      Cfg.rar_password=Value;
+    else if ((Key=="archive_location" || Key=="rar_location") && !Value.empty())
+      Cfg.archive_location=Value;
+    else if (Key=="archive_password" || Key=="rar_password")
+      Cfg.archive_password=Value;
     else if (Key=="delete_after")
       Cfg.delete_after=Value=="1" || Value=="true" || Value=="yes" || Value=="on";
     else if (Key=="extract_location" && !Value.empty())
@@ -523,8 +583,8 @@ static bool LoadConfig(PayloadConfig &Cfg,std::string &Error)
 {
   Cfg.filenames.clear();
   Cfg.config_path=SelectConfigPath();
-  Cfg.rar_location=UNRAR_DATA_DIR;
-  Cfg.rar_password.clear();
+  Cfg.archive_location=UNRAR_DATA_DIR;
+  Cfg.archive_password.clear();
   Cfg.delete_after=false;
   Cfg.extract_location=DEFAULT_EXTRACT_LOCATION;
   Cfg.threads=0;
@@ -603,7 +663,15 @@ static void ApplySchedulingConfig(const PayloadConfig &Cfg)
   }
 }
 
-static void CollectRarFiles(const std::string &Root,std::vector<std::string> &Paths,int Depth=0)
+static bool IsDiscoverableArchiveName(const std::string &Name)
+{
+  std::string Lower=ToLowerAscii(Name);
+  return EndsWithNoCase(Lower,".rar") ||
+         EndsWithNoCase(Lower,".7z") ||
+         EndsWithNoCase(Lower,".7z.001");
+}
+
+static void CollectArchiveFiles(const std::string &Root,std::vector<std::string> &Paths,int Depth=0)
 {
   if (Depth>8 || BaseName(Root)==STAGING_DIR_NAME)
     return;
@@ -629,31 +697,31 @@ static void CollectRarFiles(const std::string &Root,std::vector<std::string> &Pa
 
     if (S_ISDIR(St.st_mode))
     {
-      CollectRarFiles(FullPath,Paths,Depth+1);
+      CollectArchiveFiles(FullPath,Paths,Depth+1);
       continue;
     }
 
-    if (S_ISREG(St.st_mode) && EndsWithNoCase(Name,".rar"))
+    if (S_ISREG(St.st_mode) && IsDiscoverableArchiveName(Name))
       Paths.push_back(FullPath);
   }
   closedir(Dir);
 }
 
-static bool FindRarFiles(const std::string &RarLocation,std::vector<std::string> &Paths,
-                         std::string &Error)
+static bool FindArchiveFiles(const std::string &ArchiveLocation,std::vector<std::string> &Paths,
+                             std::string &Error)
 {
-  if (!IsDirPath(RarLocation))
+  if (!IsDirPath(ArchiveLocation))
   {
-    Error="failed to open rar_location: "+RarLocation;
+    Error="failed to open archive_location: "+ArchiveLocation;
     return false;
   }
 
   Paths.clear();
-  CollectRarFiles(RarLocation,Paths);
+  CollectArchiveFiles(ArchiveLocation,Paths);
 
   if (Paths.empty())
   {
-    Error="no .rar file found under "+RarLocation;
+    Error="no .rar or .7z file found under "+ArchiveLocation;
     return false;
   }
 
@@ -666,7 +734,7 @@ static bool ResolveConfiguredArchivePaths(const PayloadConfig &Cfg,std::vector<s
   ArchivePaths.clear();
   if (Cfg.filenames.empty())
   {
-    if (!FindRarFiles(Cfg.rar_location,ArchivePaths,Error))
+    if (!FindArchiveFiles(Cfg.archive_location,ArchivePaths,Error))
       return false;
     return true;
   }
@@ -677,7 +745,7 @@ static bool ResolveConfiguredArchivePaths(const PayloadConfig &Cfg,std::vector<s
     if (Filename.empty())
       continue;
 
-    std::string ArchivePath=Filename[0]=='/' ? Filename:JoinPath(Cfg.rar_location,Filename);
+    std::string ArchivePath=Filename[0]=='/' ? Filename:JoinPath(Cfg.archive_location,Filename);
     if (!PathExists(ArchivePath))
     {
       Error="archive not found: "+ArchivePath;
@@ -990,7 +1058,17 @@ static std::string GetArchiveStem(const std::string &Name)
   std::string Stem=Name;
   std::string Lower=ToLowerAscii(Name);
 
-  if (EndsWithNoCase(Stem,".rar"))
+  if (EndsWithNoCase(Lower,".7z.001"))
+  {
+    Stem.erase(Stem.size()-7);
+    Lower.erase(Lower.size()-7);
+  }
+  else if (EndsWithNoCase(Lower,".7z"))
+  {
+    Stem.erase(Stem.size()-3);
+    Lower.erase(Lower.size()-3);
+  }
+  else if (EndsWithNoCase(Stem,".rar"))
   {
     Stem.erase(Stem.size()-4);
     Lower.erase(Lower.size()-4);
@@ -1111,13 +1189,44 @@ static int PartNumberFromName(const std::string &Name)
   return atoi(Lower.c_str()+PartPos+5);
 }
 
+static bool Is7zVolumeName(const std::string &Name)
+{
+  std::string Lower=ToLowerAscii(Name);
+  if (Lower.size()<8)
+    return false;
+  size_t Dot=Lower.size()-4;
+  return Lower[Dot]=='.' &&
+         std::isdigit((unsigned char)Lower[Dot+1]) &&
+         std::isdigit((unsigned char)Lower[Dot+2]) &&
+         std::isdigit((unsigned char)Lower[Dot+3]) &&
+         EndsWithNoCase(Lower.substr(0,Dot),".7z");
+}
+
+static std::string First7zVolumePath(const std::string &ArchivePath)
+{
+  std::string Name=BaseName(ArchivePath);
+  if (!Is7zVolumeName(Name))
+    return ArchivePath;
+  std::string Prefix=Name.substr(0,Name.size()-3);
+  std::string First=JoinPath(DirName(ArchivePath),Prefix+"001");
+  return PathExists(First) ? First:ArchivePath;
+}
+
 static std::string ArchiveGroupKey(const std::string &ArchivePath)
 {
-  return ToLowerAscii(DirName(ArchivePath)+"/"+GetArchiveStem(BaseName(ArchivePath)));
+  ArchiveType Type=DetectArchiveType(ArchivePath);
+  return std::string(ArchiveTypeName(Type))+":"+ToLowerAscii(DirName(ArchivePath)+"/"+GetArchiveStem(BaseName(ArchivePath)));
 }
 
 static std::string PreferredArchiveStart(const std::string &ArchivePath)
 {
+  if (Is7zVolumeName(BaseName(ArchivePath)))
+    return First7zVolumePath(ArchivePath);
+
+  ArchiveType Type=DetectArchiveType(ArchivePath);
+  if (Type==ARCHIVE_7Z)
+    return First7zVolumePath(ArchivePath);
+
   std::string Dir=DirName(ArchivePath);
   std::string Name=BaseName(ArchivePath);
   std::string Stem=GetArchiveStem(Name);
@@ -1172,11 +1281,30 @@ static bool BuildArchiveQueue(const PayloadConfig &Cfg,std::vector<std::string> 
   return true;
 }
 
-static void DeleteArchiveFiles(const std::string &ArchivePath)
+static bool Is7zPartNameForStem(const std::string &Name,const std::string &Stem)
+{
+  std::string LowerName=ToLowerAscii(Name);
+  std::string LowerStem=ToLowerAscii(Stem);
+  if (LowerName.find(LowerStem+".7z.")!=0)
+    return false;
+  if (LowerName.size()!=LowerStem.size()+7)
+    return false;
+  return std::isdigit((unsigned char)LowerName[LowerStem.size()+4]) &&
+         std::isdigit((unsigned char)LowerName[LowerStem.size()+5]) &&
+         std::isdigit((unsigned char)LowerName[LowerStem.size()+6]);
+}
+
+static void DeleteArchiveFiles(const std::string &ArchivePath,ArchiveType Type)
 {
   std::string Dir=DirName(ArchivePath);
   std::string Name=BaseName(ArchivePath);
   std::string Stem=GetArchiveStem(Name);
+
+  if (Type==ARCHIVE_7Z && !Is7zVolumeName(Name))
+  {
+    unlink(ArchivePath.c_str());
+    return;
+  }
 
   DIR *D=opendir(Dir.c_str());
   if (D==NULL)
@@ -1190,7 +1318,8 @@ static void DeleteArchiveFiles(const std::string &ArchivePath)
     std::string Cur=Entry->d_name;
     if (Cur=="." || Cur=="..")
       continue;
-    if (IsArchivePartName(Cur,Stem))
+    if ((Type==ARCHIVE_RAR && IsArchivePartName(Cur,Stem)) ||
+        (Type==ARCHIVE_7Z && Is7zPartNameForStem(Cur,Stem)))
       unlink(JoinPath(Dir,Cur).c_str());
   }
   closedir(D);
@@ -1203,12 +1332,19 @@ static int ExtractArchive(const PayloadConfig &Cfg,const std::string &ArchivePat
   std::string Error;
   Installed=false;
   std::string StagePath=JoinPath(Cfg.extract_location,STAGING_DIR_NAME);
+  ArchiveType Type=DetectArchiveType(ArchivePath);
+  if (Type==ARCHIVE_UNKNOWN)
+  {
+    Notify("Archive error: unsupported archive type");
+    LogLine("archive_error archive=%s reason=unsupported_archive_type",ArchivePath.c_str());
+    return RARX_USERERROR;
+  }
 
-  Notify("UnRAR: starting %u/%u %s",(unsigned)(Index+1),(unsigned)Total,BaseName(ArchivePath).c_str());
-  LogLine("start archive=%s config=%s sidecar_config=%s rar_location=%s extract_location=%s stage_path=%s delete_after=%u threads=%u nice=%d cpu_mask=0x%llx progress=%d",
-          ArchivePath.c_str(),Cfg.config_path.c_str(),
+  Notify("Archive: starting %u/%u %s",(unsigned)(Index+1),(unsigned)Total,BaseName(ArchivePath).c_str());
+  LogLine("start archive=%s archive_type=%s config=%s sidecar_config=%s archive_location=%s extract_location=%s stage_path=%s delete_after=%u threads=%u nice=%d cpu_mask=0x%llx progress=%d",
+          ArchivePath.c_str(),ArchiveTypeName(Type),Cfg.config_path.c_str(),
           SidecarConfigPath.empty() ? "none":SidecarConfigPath.c_str(),
-          Cfg.rar_location.c_str(),Cfg.extract_location.c_str(),StagePath.c_str(),
+          Cfg.archive_location.c_str(),Cfg.extract_location.c_str(),StagePath.c_str(),
           Cfg.delete_after ? 1:0,Cfg.threads,Cfg.nice,
           (unsigned long long)Cfg.cpu_mask,Cfg.progress);
   LastNotifiedProgress=-10;
@@ -1217,33 +1353,50 @@ static int ExtractArchive(const PayloadConfig &Cfg,const std::string &ArchivePat
   std::string ExistingFinalPath;
   if (ShouldSkipExistingInstallBeforeExtract(Cfg,ArchivePath,ExistingTitleId,ExistingFinalPath))
   {
-    Notify("UnRAR skipped: %s already installed",ExistingTitleId.c_str());
-    LogLine("skip archive=%s title_id=%s final_path=%s reason=already_installed_precheck",
-            ArchivePath.c_str(),ExistingTitleId.c_str(),ExistingFinalPath.c_str());
+    Notify("Archive skipped: %s already installed",ExistingTitleId.c_str());
+    LogLine("skip archive=%s archive_type=%s title_id=%s final_path=%s reason=already_installed_precheck",
+            ArchivePath.c_str(),ArchiveTypeName(Type),ExistingTitleId.c_str(),ExistingFinalPath.c_str());
     return RARX_SUCCESS;
   }
 
   if (!RemoveTree(StagePath,Error))
   {
-    Notify("UnRAR error: %s",Error.c_str());
+    Notify("Archive error: %s",Error.c_str());
     LogLine("staging_error %s",Error.c_str());
     return 1;
   }
   if (!MkdirAll(StagePath))
   {
-    Notify("UnRAR error: failed to create staging directory");
+    Notify("Archive error: failed to create staging directory");
     LogLine("staging_error failed to create staging directory: %s",StagePath.c_str());
     return 1;
   }
 
   uint64 ExtractStart=NowMs();
-  int Code=RunUnrarExtract(ArchivePath,StagePath,Cfg.rar_password,Cfg.threads);
+  int Code=RARX_FATAL;
+  std::string Reason;
+  std::string MissingVolume;
+  if (Type==ARCHIVE_RAR)
+  {
+    Code=RunUnrarExtract(ArchivePath,StagePath,Cfg.archive_password,Cfg.threads);
+    Reason=ExitReason((RAR_EXIT)Code);
+  }
+  else
+  {
+    SevenZExtractResult SevenZ=Run7zExtract(ArchivePath,StagePath,Cfg.archive_password,Cfg.threads);
+    Code=SevenZ.code;
+    Reason=SevenZ.reason;
+    MissingVolume=SevenZ.missing_volume;
+  }
   uint64 ExtractMs=NowMs()-ExtractStart;
-  LogLine("extract_result archive=%s code=%d reason=%s elapsed_ms=%llu",
-          ArchivePath.c_str(),Code,ExitReason((RAR_EXIT)Code),(unsigned long long)ExtractMs);
+  LogLine("extract_result archive=%s archive_type=%s code=%d reason=%s elapsed_ms=%llu%s%s",
+          ArchivePath.c_str(),ArchiveTypeName(Type),Code,Reason.c_str(),
+          (unsigned long long)ExtractMs,
+          MissingVolume.empty() ? "":" missing_volume=",
+          MissingVolume.empty() ? "":MissingVolume.c_str());
   if (Code!=RARX_SUCCESS && Code!=RARX_WARNING)
   {
-    Notify("UnRAR error: %s",ExitReason((RAR_EXIT)Code));
+    Notify("Archive error: %s",Reason.c_str());
     return Code;
   }
   Ps5UnrarProgress(100);
@@ -1254,7 +1407,7 @@ static int ExtractArchive(const PayloadConfig &Cfg,const std::string &ArchivePat
   NormalizeResult Result=NormalizeExtractedApp(Cfg,StagePath,TitleId,FinalPath,Error);
   if (Result==NORMALIZE_ERROR)
   {
-    Notify("UnRAR error: %s",Error.c_str());
+    Notify("Archive error: %s",Error.c_str());
     LogLine("normalize_error %s",Error.c_str());
     return 1;
   }
@@ -1264,19 +1417,19 @@ static int ExtractArchive(const PayloadConfig &Cfg,const std::string &ArchivePat
 
   if (Result==NORMALIZE_SKIPPED)
   {
-    Notify("UnRAR skipped: %s already installed",TitleId.c_str());
-    LogLine("skip archive=%s title_id=%s final_path=%s extract_ms=%llu normalize_ms=%llu reason=already_installed",
-            ArchivePath.c_str(),TitleId.c_str(),FinalPath.c_str(),
+    Notify("Archive skipped: %s already installed",TitleId.c_str());
+    LogLine("skip archive=%s archive_type=%s title_id=%s final_path=%s extract_ms=%llu normalize_ms=%llu reason=already_installed",
+            ArchivePath.c_str(),ArchiveTypeName(Type),TitleId.c_str(),FinalPath.c_str(),
             (unsigned long long)ExtractMs,(unsigned long long)NormalizeMs);
     return Code;
   }
 
   if (Cfg.delete_after)
-    DeleteArchiveFiles(ArchivePath);
+    DeleteArchiveFiles(ArchivePath,Type);
 
-  Notify("UnRAR done: %s installed to %s",TitleId.c_str(),FinalPath.c_str());
-  LogLine("done archive=%s title_id=%s final_path=%s extract_ms=%llu normalize_ms=%llu",
-          ArchivePath.c_str(),TitleId.c_str(),FinalPath.c_str(),
+  Notify("Archive done: %s installed to %s",TitleId.c_str(),FinalPath.c_str());
+  LogLine("done archive=%s archive_type=%s title_id=%s final_path=%s extract_ms=%llu normalize_ms=%llu",
+          ArchivePath.c_str(),ArchiveTypeName(Type),TitleId.c_str(),FinalPath.c_str(),
           (unsigned long long)ExtractMs,(unsigned long long)NormalizeMs);
   Installed=true;
   return Code;
