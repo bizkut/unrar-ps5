@@ -2,6 +2,12 @@
 
 PS5 ELF payload for extracting RAR and 7z archives on a jailbroken PS5 and installing extracted apps into a configurable `<extract_location>/<TitleID>-app` layout.
 
+## Firmware & Loader Compatibility
+
+- **Supported PS5 Firmwares**: `1.00` – `14.22` (including `13.40`, `13.42`, `13.60`, and `14.xx`).
+- **Supported Loaders**: `ps5-payload-elfldr` (`v0.27+`), `pldmgr` (Payload Manager), `etaHEN` ELF loader (port `9021`).
+- **SDK Toolchain**: Built against [`ps5-payload-dev/pacbrew-repo`](https://github.com/ps5-payload-dev/pacbrew-repo) (`v0.41.1+`), fixing the `SIGILL` (`ud2`) CRT startup crash (`__kernel_init` returning `-ENOSYS`) that occurred on newer firmwares such as `13.40` with older SDK images.
+
 It is meant for archives that contain a PS5 app folder with:
 
 ```text
@@ -267,7 +273,17 @@ progress=10
 
 ## Build
 
-Build with the Docker SDK image:
+Build with the official [`ps5-payload-dev/pacbrew-repo`](https://github.com/ps5-payload-dev/pacbrew-repo) SDK bundle (`v0.41.1+`):
+
+```sh
+curl -fL -o ps5-payload-dev.tar.gz \
+  https://github.com/ps5-payload-dev/pacbrew-repo/releases/download/v0.41.1/ps5-payload-dev.tar.gz
+mkdir -p ps5-pacbrew
+tar -xzf ps5-payload-dev.tar.gz -C ps5-pacbrew
+make PS5_PAYLOAD_SDK="$PWD/ps5-pacbrew/opt/ps5-payload-sdk" clean all
+```
+
+Or build with the legacy Docker SDK image:
 
 ```sh
 docker run --rm \
@@ -282,10 +298,4 @@ The output ELF is:
 
 ```text
 unrar_ps5.elf
-```
-
-There is also a convenience target when the host `PS5_PAYLOAD_SDK` path exists:
-
-```sh
-make docker-build
 ```
