@@ -58,11 +58,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: unrar_ps5
-          path: unrar_ps5.elf
+          path: |
+            unrar_ps5.elf
+            shutdown_ps5.elf
           if-no-files-found: error
 
       - name: Create GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: unrar_ps5.elf
+          files: |
+            unrar_ps5.elf
+            shutdown_ps5.elf

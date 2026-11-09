@@ -6,6 +6,7 @@ include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 
 TARGET := unrar_ps5
 ELF := $(TARGET).elf
+SHUTDOWN_ELF := shutdown_ps5.elf
 SRC_DIR := src
 LZMA_DIR := lzma2601
 LZMA_C_DIR := $(LZMA_DIR)/C
@@ -82,8 +83,9 @@ SEVENZ_ARCHIVE_OBJ := \
 
 SEVENZ_OBJ := $(SEVENZ_C_OBJ) $(SEVENZ_COMMON_OBJ) $(SEVENZ_CODEC_OBJ) $(SEVENZ_ARCHIVE_OBJ)
 OBJECTS := $(COMMON_OBJ) $(UNRAR_OBJ) $(PAYLOAD_OBJ) $(SEVENZ_OBJ)
+SHUTDOWN_OBJ := $(SRC_DIR)/shutdown_ps5.o
 
-all: $(ELF)
+all: $(ELF) $(SHUTDOWN_ELF)
 
 $(SRC_DIR)/%.o: $(SRC_DIR)/%.cpp
 	$(CXX) $(CXXFLAGS) $(DEFINES) -DUNRAR -c $< -o $@
@@ -103,8 +105,11 @@ $(LZMA_CPP_DIR)/%.o: $(LZMA_CPP_DIR)/%.cpp
 $(ELF): $(OBJECTS)
 	$(CXX) -o $@ $(OBJECTS) $(LDFLAGS)
 
+$(SHUTDOWN_ELF): $(SHUTDOWN_OBJ)
+	$(CXX) -o $@ $(SHUTDOWN_OBJ) $(LDFLAGS)
+
 clean:
-	rm -f $(OBJECTS) $(ELF)
+	rm -f $(OBJECTS) $(SHUTDOWN_OBJ) $(ELF) $(SHUTDOWN_ELF)
 
 send: $(ELF)
 	nc -w 10 $(PS5_HOST) $(PS5_PORT) < $<
