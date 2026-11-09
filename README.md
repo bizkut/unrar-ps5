@@ -2,6 +2,12 @@
 
 PS5 ELF payload for extracting RAR and 7z archives on a jailbroken PS5 and installing extracted apps into a configurable `<extract_location>/<TitleID>-app` layout.
 
+## Firmware & Loader Compatibility
+
+- **Supported PS5 Firmwares**: `1.00` – `14.22` (including `13.40`, `13.42`, `13.60`, and `14.xx`).
+- **Supported Loaders**: `ps5-payload-elfldr` (`v0.27+`), `pldmgr` (Payload Manager), `etaHEN` ELF loader (port `9021`).
+- **SDK Toolchain**: Built against [`ps5-payload-dev/pacbrew-repo`](https://github.com/ps5-payload-dev/pacbrew-repo) (`v0.41.1+`), fixing the `SIGILL` (`ud2`) CRT startup crash (`__kernel_init` returning `-ENOSYS`) that occurred on newer firmwares such as `13.40` with older SDK images.
+
 It is meant for archives that contain a PS5 app folder with:
 
 ```text
@@ -108,7 +114,7 @@ When the archive path contains a TitleID, the payload can also use `PPSA17221.in
 
 Archive-local `.ini` files are checked first. The normal config locations are a fallback for TitleID `.ini` files only when the archive path contains that TitleID.
 
-The payload reads `config.ini` first, builds the archive queue, then applies the sidecar `.ini` before extracting that archive. This lets sidecar files set archive-specific values such as `archive_password=`, `archive_location=`, `extract_location=`, `delete_after=`, `threads=`, `nice=`, `cpu_mask=`, or `progress=`.
+The payload reads `config.ini` first, builds the archive queue, then applies the sidecar `.ini` before extracting that archive. This lets sidecar files set archive-specific values such as `archive_password=`, `archive_location=`, `extract_location=`, `delete_after=`, `shutdown_after=`, `threads=`, `nice=`, `cpu_mask=`, or `progress=`.
 
 `rar_password=` and `rar_location=` remain supported aliases for older configs. `filename=` entries in a sidecar `.ini` are ignored.
 
@@ -121,6 +127,7 @@ filename=
 archive_location=/data/unrar
 archive_password=
 delete_after=0
+shutdown_after=0
 extract_location=/data/homebrew
 threads=0
 nice=-20
@@ -135,6 +142,7 @@ filename=
 archive_location=/mnt/usb0/unrar
 archive_password=
 delete_after=0
+shutdown_after=0
 extract_location=/data/homebrew
 threads=0
 nice=-20
@@ -149,6 +157,7 @@ filename=
 archive_location=/data/unrar
 archive_password=your_password
 delete_after=0
+shutdown_after=0
 extract_location=/data/homebrew
 threads=0
 nice=-20
@@ -166,11 +175,20 @@ progress=10
 | `rar_location` | `/data/unrar` | Backward-compatible alias for `archive_location`. |
 | `rar_password` | empty | Backward-compatible alias for `archive_password`. |
 | `delete_after` | `0` | Set to `1`, `true`, `yes`, or `on` to delete archive volumes after a successful install. RAR deletes detected multipart volumes; single-file 7z deletes the `.7z`; multipart 7z deletes sibling `name.7z.001`, `.002`, etc. |
+| `shutdown_after` | `0` | Set to `1`, `true`, `yes`, or `on` to automatically sync disks and power off the PS5 (`reboot(RB_HALT \| RB_POWEROFF)`) after all queued extractions succeed. |
 | `extract_location` | `/data/homebrew` | Base install directory. Final path becomes `<extract_location>/<TitleID>-app`. |
 | `threads` | `0` | Archive engine thread count. `0` lets UnRAR or 7-Zip choose its default. Explicit 7z values are clamped to `1`-`8`. |
 | `nice` | `-20` | Process priority from `-20` to `20`. Invalid values are ignored. |
 | `cpu_mask` | `0` | Optional CPU affinity mask, for example `0xff`. `0` disables affinity pinning. Some kernels may reject affinity changes; check the log. |
 | `progress` | `10` | Notification interval in percent. For example, `10` notifies every 10%; `5` notifies every 5%. Values are clamped to `1`-`100`. |
+
+## Standalone Power-Off Payload (`shutdown_ps5.elf`)
+
+The build also produces `shutdown_ps5.elf`, a lightweight standalone payload that shows a 3-second PS5 notification, flushes all filesystem buffers (`sync()`), and cleanly powers off the console (`syscall(55, 0x4008)`).
+
+```sh
+nc -w 10 ps5ip 9021 < shutdown_ps5.elf
+```
 
 ## Multiple Archives
 
@@ -267,7 +285,17 @@ progress=10
 
 ## Build
 
-Build with the Docker SDK image:
+Build with the official [`ps5-payload-dev/pacbrew-repo`](https://github.com/ps5-payload-dev/pacbrew-repo) SDK bundle (`v0.41.1+`):
+
+```sh
+curl -fL -o ps5-payload-dev.tar.gz \
+  https://github.com/ps5-payload-dev/pacbrew-repo/releases/download/v0.41.1/ps5-payload-dev.tar.gz
+mkdir -p ps5-pacbrew
+tar -xzf ps5-payload-dev.tar.gz -C ps5-pacbrew
+make PS5_PAYLOAD_SDK="$PWD/ps5-pacbrew/opt/ps5-payload-sdk" clean all
+```
+
+Or build with the legacy Docker SDK image:
 
 ```sh
 docker run --rm \
@@ -278,14 +306,9 @@ docker run --rm \
   make clean all
 ```
 
-The output ELF is:
+The output ELFs are:
 
 ```text
 unrar_ps5.elf
-```
-
-There is also a convenience target when the host `PS5_PAYLOAD_SDK` path exists:
-
-```sh
-make docker-build
+shutdown_ps5.elf
 ```

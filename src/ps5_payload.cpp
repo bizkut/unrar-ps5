@@ -14,6 +14,7 @@
 #include <sys/cpuset.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
@@ -39,6 +40,7 @@ struct PayloadConfig
   std::string archive_location;
   std::string archive_password;
   bool delete_after;
+  bool shutdown_after;
   std::string extract_location;
   uint threads;
   int nice;
@@ -347,7 +349,7 @@ static bool IsKnownConfigKey(const std::string &Key)
 {
   return Key=="filename" || Key=="archive_location" || Key=="archive_password" ||
          Key=="rar_location" || Key=="rar_password" ||
-         Key=="delete_after" || Key=="extract_location" || Key=="threads" ||
+         Key=="delete_after" || Key=="shutdown_after" || Key=="extract_location" || Key=="threads" ||
          Key=="nice" || Key=="cpu_mask" || Key=="progress";
 }
 
@@ -516,6 +518,7 @@ static bool EnsureDefaultConfig(const std::string &ConfigPath,std::string &Error
     "archive_location=/data/unrar\n"
     "archive_password=\n"
     "delete_after=0\n"
+    "shutdown_after=0\n"
     "extract_location=/data/homebrew\n"
     "threads=0\n"
     "nice=-20\n"
@@ -560,6 +563,8 @@ static void ApplyConfigData(PayloadConfig &Cfg,const std::string &Data,bool Allo
       Cfg.archive_password=Value;
     else if (Key=="delete_after")
       Cfg.delete_after=Value=="1" || Value=="true" || Value=="yes" || Value=="on";
+    else if (Key=="shutdown_after")
+      Cfg.shutdown_after=Value=="1" || Value=="true" || Value=="yes" || Value=="on";
     else if (Key=="extract_location" && !Value.empty())
       Cfg.extract_location=Value;
     else if (Key=="threads")
@@ -586,6 +591,7 @@ static bool LoadConfig(PayloadConfig &Cfg,std::string &Error)
   Cfg.archive_location=UNRAR_DATA_DIR;
   Cfg.archive_password.clear();
   Cfg.delete_after=false;
+  Cfg.shutdown_after=false;
   Cfg.extract_location=DEFAULT_EXTRACT_LOCATION;
   Cfg.threads=0;
   Cfg.nice=-20;
@@ -1341,11 +1347,11 @@ static int ExtractArchive(const PayloadConfig &Cfg,const std::string &ArchivePat
   }
 
   Notify("Archive: starting %u/%u %s",(unsigned)(Index+1),(unsigned)Total,BaseName(ArchivePath).c_str());
-  LogLine("start archive=%s archive_type=%s config=%s sidecar_config=%s archive_location=%s extract_location=%s stage_path=%s delete_after=%u threads=%u nice=%d cpu_mask=0x%llx progress=%d",
+  LogLine("start archive=%s archive_type=%s config=%s sidecar_config=%s archive_location=%s extract_location=%s stage_path=%s delete_after=%u shutdown_after=%u threads=%u nice=%d cpu_mask=0x%llx progress=%d",
           ArchivePath.c_str(),ArchiveTypeName(Type),Cfg.config_path.c_str(),
           SidecarConfigPath.empty() ? "none":SidecarConfigPath.c_str(),
           Cfg.archive_location.c_str(),Cfg.extract_location.c_str(),StagePath.c_str(),
-          Cfg.delete_after ? 1:0,Cfg.threads,Cfg.nice,
+          Cfg.delete_after ? 1:0,Cfg.shutdown_after ? 1:0,Cfg.threads,Cfg.nice,
           (unsigned long long)Cfg.cpu_mask,Cfg.progress);
   LastNotifiedProgress=-10;
 
@@ -1487,6 +1493,7 @@ int main(int argc,char *argv[])
           (unsigned)Archives.size(),Cfg.progress);
   int FinalCode=RARX_SUCCESS;
   bool AnyInstalled=false;
+  bool ShouldShutdown=Cfg.shutdown_after;
   for (size_t I=0;I<Archives.size();I++)
   {
     PayloadConfig ArchiveCfg=Cfg;
@@ -1497,6 +1504,9 @@ int main(int argc,char *argv[])
       LogLine("sidecar_config_error archive=%s error=%s",Archives[I].c_str(),Error.c_str());
       return 1;
     }
+
+    if (ArchiveCfg.shutdown_after)
+      ShouldShutdown=true;
 
     ApplySchedulingConfig(ArchiveCfg);
     ProgressInterval=ArchiveCfg.progress;
@@ -1519,6 +1529,15 @@ int main(int argc,char *argv[])
   {
     Notify("UnRAR: no new archives to extract");
     LogLine("queue_result reason=no_new_archives");
+  }
+  else if (ShouldShutdown && AnyInstalled)
+  {
+    Notify("UnRAR: shutting down PS5 in 3 seconds...");
+    LogLine("shutdown_after triggered=1");
+    sync();
+    sleep(3);
+    sync();
+    syscall(55, 0x4008);
   }
 
   return FinalCode;

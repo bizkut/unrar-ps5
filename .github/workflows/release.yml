@@ -2,6 +2,8 @@ name: Build and Release
 
 on:
   push:
+    branches:
+      - master
     tags:
       - "v*"
   pull_request:
@@ -13,30 +15,58 @@ permissions:
 jobs:
   build:
     name: Build PS5 payload
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Build with PS5 payload SDK
+      - name: Install build dependencies
         run: |
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/work" \
-            -w /work \
-            -e PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk \
-            bizkut666/ps5-payload-sdk:libcxx \
-            make clean all
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            clang-18 \
+            lld-18 \
+            llvm-18 \
+            make \
+            curl \
+            tar
+
+      - name: Install PS5 PacBrew SDK bundle
+        run: |
+          set -euo pipefail
+          pacbrew_version="v0.41.1"
+          archive="$RUNNER_TEMP/ps5-payload-dev-${pacbrew_version}.tar.gz"
+          root="$RUNNER_TEMP/ps5-pacbrew"
+          curl -fL --retry 3 \
+            -o "$archive" \
+            "https://github.com/ps5-payload-dev/pacbrew-repo/releases/download/${pacbrew_version}/ps5-payload-dev.tar.gz"
+          mkdir -p "$root"
+          tar -xzf "$archive" -C "$root"
+          sdk_dst="$root/opt/ps5-payload-sdk"
+          test -f "$sdk_dst/toolchain/prospero.mk"
+          test -x "$sdk_dst/bin/prospero-clang"
+          test -x "$sdk_dst/bin/prospero-clang++"
+          echo "PS5_PAYLOAD_SDK=$sdk_dst" >> "$GITHUB_ENV"
+
+      - name: Build payload
+        run: |
+          make PS5_PAYLOAD_SDK="${PS5_PAYLOAD_SDK}" clean all
 
       - name: Upload payload artifact
         uses: actions/upload-artifact@v4
         with:
           name: unrar_ps5
-          path: unrar_ps5.elf
+          path: |
+            unrar_ps5.elf
+            shutdown_ps5.elf
           if-no-files-found: error
 
       - name: Create GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: unrar_ps5.elf
+          files: |
+            unrar_ps5.elf
+            shutdown_ps5.elf
